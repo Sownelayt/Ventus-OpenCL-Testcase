@@ -15,3 +15,5 @@ _get_case/results/*
 *.hex
 *.out
 *.log
+testcases/_get_case/MNIST/*.out
+testcases/_get_case/MNIST_conv_small/*.out

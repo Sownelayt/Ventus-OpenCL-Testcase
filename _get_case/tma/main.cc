@@ -1,8 +1,8 @@
 #include <CL/cl.h>
+#include <cmath>
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
-#include <chrono>
 
 // 检查OpenCL调用的宏
 #define CL_CHECK(err) if(err != CL_SUCCESS) { printf("OpenCL Error: %d\n", err); exit(-1); }
@@ -60,8 +60,8 @@ int main(int argc, char** argv) {
     kernel = clCreateKernel(program, "dma_3", NULL);
 
     // 创建缓冲区
-    int size = 128;
-    int datasize = size * 10;
+    int size = 32;
+    int datasize = 16;
     size_t nbytes = sizeof(float) * datasize;
     input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, nbytes, NULL, NULL);
     output_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, nbytes, NULL, NULL);
@@ -74,14 +74,10 @@ int main(int argc, char** argv) {
     // size_t local_mem_size = sizeof(float) * size;
     // clSetKernelArg(kernel, 2, local_mem_size, NULL);
 
-    // 初始化输入数据
-    // int size = size * 256;
     std::vector<float> input(datasize);
-    // 初始化input为0~100的随机浮点数
     for(int i = 0; i < datasize; i++){
-      input[i] = static_cast<float>(rand() % 101);
+      input[i] = static_cast<float>(i + 1);
     }
-    printf("\n");
 
     // 将输入数据拷贝到设备端
     CL_CHECK(clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, nbytes, input.data(), 0, NULL, NULL));
@@ -99,13 +95,14 @@ int main(int argc, char** argv) {
     std::vector<float> output(datasize);
     CL_CHECK(clEnqueueReadBuffer(queue, output_buffer, CL_TRUE, 0, nbytes, output.data(), 0, NULL, NULL));
 
-    // 验证结果
-    // for (int i = 0; i < datasize; ++i) {
-    //     if (output[i] != input[i] * 2.0f) {
-    //         printf("Error at index %d: expected %f, got %f\n", i, input[i] * 2.0f, output[i]);
-    //     }
-    // }
-    // printf("finished kernel and success if no error!\n");
+    int pass = 1;
+    for (int i = 0; i < datasize; ++i) {
+        if (std::fabs(output[i] - input[i]) > 0.0f) {
+            printf("Error at index %d: expected %f, got %f\n",
+                   i, input[i], output[i]);
+            pass = 0;
+        }
+    }
 
     // 清理资源
     clReleaseMemObject(input_buffer);
@@ -115,6 +112,6 @@ int main(int argc, char** argv) {
     clReleaseCommandQueue(queue);
     clReleaseContext(context);
 
-    printf("Done.\n");
-    return 0;
+    printf(pass ? "OK\n" : "FAILED\n");
+    return pass ? 0 : 1;
 }
