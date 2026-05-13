@@ -1,0 +1,9 @@
+dir,exe,run_cmd
+dma_test,dma_test.out,
+copysize_test,copysize_test.out,
+tensor_dma_test,tensor_dma_test.out,
+multi_wg_dma_test,multi_wg_dma_test.out,
+tma_matrix_test,tma_matrix_test.out,
+bulk_dma_matrix_test,bulk_dma_matrix_test.out,
+multi_warp_dma_fence_test,multi_warp_dma_fence_test.out,
+dma_shared_routing_conflict_test,dma_shared_routing_conflict_test.out,
