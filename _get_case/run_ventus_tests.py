@@ -32,10 +32,11 @@ def read_cases(cases_csv: Path) -> List[dict]:
             d = row.get("dir", "").strip()
             e = row.get("exe", "").strip()
             r = (row.get("run_cmd") or "").strip()
+            check_mode = (row.get("check_mode") or row.get("check") or "result_file").strip()
             if not d or not e:
                 print(f"[WARN] 跳过无效行: {row}", file=sys.stderr)
                 continue
-            rows.append({"dir": d, "exe": e, "run_cmd": r})
+            rows.append({"dir": d, "exe": e, "run_cmd": r, "check_mode": check_mode})
     return rows
 
 def ensure_dir(p: Path):
@@ -159,6 +160,24 @@ def allclose(a: List[float], b: List[float], rtol: float, atol: float) -> Tuple[
         "worst_index": idx
     }
 
+def summarize_verdict_output(out: str, max_lines: int = 12) -> str:
+    """
+    DMA/TMA directed tests report pass/fail on stdout instead of writing
+    VENTUS_RESULT_FILE. Keep a compact verdict trail for summary.csv/summary.md.
+    Full stdout is still saved as results/<case>/<env>/run.log.
+    """
+    keep = []
+    needles = (
+        "PASS", "FAIL", "FAILED", "OK", "SKIP", "summary",
+        "pass:", "fail:", "skip:", "[SUMMARY]"
+    )
+    for line in out.splitlines():
+        if any(x in line for x in needles):
+            keep.append(line.strip())
+    if not keep:
+        return "exit-code verdict; no PASS/FAIL marker captured"
+    return " | ".join(keep[-max_lines:])[:1200]
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="批量测试（只读程序写出的最终结果文件）")
@@ -213,6 +232,7 @@ def main():
             "case_dir": case_dir,
             "exe": exe_name,
             "run_cmd": pick_run_cmd(case_dir, exe_name, run_cmd_field),
+            "check_mode": row.get("check_mode", "result_file"),
             "build_ok": ok,
             "build_time": make_time
         })
@@ -283,11 +303,21 @@ def main():
         print("\n=== 阶段 2：NVIDIA 基线 ===")
         for info in case_infos:
             case, case_dir, run_cmd = info["case_name"], info["case_dir"], info["run_cmd"]
+            check_mode = info.get("check_mode", "result_file")
             if not info["build_ok"]:
                 append_result({
                     "case": case, "env": "build", "status": "build_failed",
                     "time_s": f"{info['build_time']:.6f}", "match": "", "max_abs_err": "", "max_rel_err": "",
                     "details": "make failed"
+                })
+                continue
+
+            if check_mode == "verdict":
+                append_result({
+                    "case": case, "env": "nvidia", "status": "skipped(verdict)",
+                    "time_s": "0.000000", "match": "baseline",
+                    "max_abs_err": "", "max_rel_err": "",
+                    "details": "Ventus-directed pass/fail testcase; no NVIDIA final.hex baseline required"
                 })
                 continue
 
@@ -298,8 +328,9 @@ def main():
             # 运行时用环境变量告诉程序把“最终结果”写到 out_file
             extra_env = {RESULT_ENV: str(out_file)}
             print(f"[NVIDIA] {case} -> {out_file}")
-            rc, _, tsec, to = run_bash(run_cmd, cwd=case_dir, use_env=False,
-                                       timeout_s=args.timeout, extra_env=extra_env)
+            rc, out, tsec, to = run_bash(run_cmd, cwd=case_dir, use_env=False,
+                                         timeout_s=args.timeout, extra_env=extra_env)
+            (out_file.parent / "run.log").write_text(out, encoding="utf-8", errors="replace")
 
             vals = parse_result_file(out_file) if out_file.exists() else []
             status = "timeout" if to else ("ok" if (rc == 0 and vals) else "run_failed")
@@ -317,6 +348,7 @@ def main():
         print(f"\n--- VENTUS_BACKEND = {be} ---")
         for info in case_infos:
             case, case_dir, run_cmd = info["case_name"], info["case_dir"], info["run_cmd"]
+            check_mode = info.get("check_mode", "result_file")
             if not info["build_ok"]:
                 append_result({
                     "case": case, "env": be, "status": "compile_failed",
@@ -333,9 +365,26 @@ def main():
             if out_file.exists():
                 out_file.unlink()
             extra_env = {RESULT_ENV: str(out_file)}
+            if be == "gvm" and case == "tma_matrix_test":
+                extra_env["VENTUS_TMA_RUN_RTL_ONLY"] = "1"
             print(f"[{case}] {be} -> {out_file}")
-            rc, _, tsec, to = run_bash(run_cmd, cwd=case_dir, use_env=True, backend=be,
-                                       timeout_s=args.timeout, extra_env=extra_env)
+            rc, out, tsec, to = run_bash(run_cmd, cwd=case_dir, use_env=True, backend=be,
+                                         timeout_s=args.timeout, extra_env=extra_env)
+            (out_file.parent / "run.log").write_text(out, encoding="utf-8", errors="replace")
+
+            if check_mode == "verdict":
+                status = "timeout" if to else ("ok" if rc == 0 else "run_failed")
+                match_str = "pass" if status == "ok" else "fail"
+                details = summarize_verdict_output(out)
+                if status != "ok":
+                    details = f"rc={rc}; {details}"
+
+                append_result({
+                    "case": case, "env": be, "status": status,
+                    "time_s": f"{tsec:.6f}", "match": match_str,
+                    "max_abs_err": "", "max_rel_err": "", "details": details
+                })
+                continue
 
             vals = parse_result_file(out_file) if out_file.exists() else []
             status = "timeout" if to else ("ok" if (rc == 0 and vals) else "run_failed")

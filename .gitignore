@@ -15,5 +15,6 @@ _get_case/results/*
 *.hex
 *.out
 *.log
-testcases/_get_case/MNIST/*.out
-testcases/_get_case/MNIST_conv_small/*.out
+_get_case/MNIST/*.out
+_get_case/MNIST_conv_small/*.out
+_get_case/__pycache__

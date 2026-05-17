@@ -2,8 +2,8 @@
  * Descriptor-addressed TMA host smoke test.
  *
  * Runs a 2D FP32 4x4 subbox copy twice: without prefetch and with
- * PREFETCH_TENSORMAP. Spike models prefetch as a no-op, so both paths must
- * produce identical bytes.
+ * PREFETCH_TENSORMAP. The kernel loads coords into the CP_ASYNC_TENSOR_G2S
+ * VRS2 dynamic parameter block, so both paths must produce identical bytes.
  */
 
 #include <stdint.h>

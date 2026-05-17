@@ -4,7 +4,8 @@
  * The host fills descriptor v0 fields that are independent of OpenCL device
  * addresses. Thread 0 patches descriptor.globalAddress with the runtime src
  * pointer, then all lanes issue optional PREFETCH_TENSORMAP and
- * CP_ASYNC_TENSOR_G2S using scalar pointer operands.
+ * CP_ASYNC_TENSOR_G2S with scalar descriptor/dst operands plus a VGPR dynamic
+ * parameter block. VRS2 word 0..4 carries coords[0..4].
  */
 
 #define SHARED_BUF_BYTES 128
@@ -46,16 +47,19 @@ tma_descriptor_kernel(__global uint *desc,
   }
 
   __asm__ volatile(
+    "vid.v v12\n\t"
+    "vsll.vi v12, v12, 2\n\t"
+    "vadd.vx v12, v12, %[coords]\n\t"
+    "vlw12.v v12, 0(v12)\n\t"
     "mv x10, %[smem]\n\t"
     "mv x11, %[desc]\n\t"
-    "mv x12, %[coords]\n\t"
-    /* CP_ASYNC_TENSOR_G2S rd=x10, rs1=x11, rs2=x12 */
+    /* CP_ASYNC_TENSOR_G2S rd=x10, rs1=x11, rs2=v12 */
     ".word 0x00C5E542\n\t"
     /* CP_ASYNC_FENCE */
     ".word 0x00004042\n\t"
     :
     : [smem] "r"(smem), [desc] "r"(desc_ptr), [coords] "r"(coords_ptr)
-    : "x10", "x11", "x12", "memory"
+    : "x10", "x11", "memory"
   );
   barrier(CLK_LOCAL_MEM_FENCE);
 
