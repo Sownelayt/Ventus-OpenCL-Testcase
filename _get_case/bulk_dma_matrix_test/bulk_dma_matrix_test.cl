@@ -37,11 +37,11 @@ bulk_dma_matrix_kernel(__global const uchar *src,
       "mv   x11, %[dst]\n\t"
       "mv   x12, %[size]\n\t"
       ".word 0x00c515c2\n\t"
-      ".word 0x00004042\n\t"
+      ".word 0x00006042\n\t"
       : [src] "=&r"(src_addr)
       : [off] "r"(src_offset), [dst] "r"(dst_addr),
         [size] "r"(copy_bytes)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
   }
 

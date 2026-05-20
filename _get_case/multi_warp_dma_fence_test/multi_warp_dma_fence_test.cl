@@ -38,19 +38,16 @@ multi_warp_dma_fence_kernel(__global const uchar *src,
       "mul  %[seg], %[seg], %[stride]\n\t"
       "add  %[src], %[src], %[base]\n\t"
       "add  %[src], %[src], %[seg]\n\t"
-      "mv   x10, %[src]\n\t"
-      "mv   x11, %[dst]\n\t"
-      "mv   x12, %[size]\n\t"
-      ".word 0x00c515c2\n\t"
+      ".insn r 0x42, 1, 0, %[dst], %[src], %[size]\n\t"
       : [src] "=&r"(src_addr), [seg] "=&r"(seg),
         [dst] "=&r"(dst_addr)
       : [shared] "r"(shared_base), [size] "r"(copy_bytes),
         [dpw] "r"(dmas_per_warp), [base] "r"(src_base_offset),
         [stride] "r"(src_stride)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
 
-    __asm__ volatile(".word 0x00004042\n\t" ::: "memory");
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
   }
 
   uint warp_words = (dmas_per_warp * copy_bytes) / 4;
@@ -91,16 +88,13 @@ multi_warp_dma_fence2_kernel(__global const uchar *src,
       "mul  %[seg], %[seg], %[stride]\n\t"
       "add  %[src], %[src], %[base]\n\t"
       "add  %[src], %[src], %[seg]\n\t"
-      "mv   x10, %[src]\n\t"
-      "mv   x11, %[dst]\n\t"
-      "mv   x12, %[size]\n\t"
-      ".word 0x00c515c2\n\t"
+      ".insn r 0x42, 1, 0, %[dst], %[src], %[size]\n\t"
       : [src] "=&r"(src_addr), [seg] "=&r"(seg),
         [dst] "=&r"(dst_addr)
       : [shared] "r"(shared_base), [size] "r"(copy_bytes),
         [dpw] "r"(dmas_per_warp), [base] "r"(src_base_offset),
         [stride] "r"(src_stride)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
 
     __asm__ volatile(
@@ -115,19 +109,16 @@ multi_warp_dma_fence2_kernel(__global const uchar *src,
       "mul  %[seg], %[seg], %[stride]\n\t"
       "add  %[src], %[src], %[base]\n\t"
       "add  %[src], %[src], %[seg]\n\t"
-      "mv   x10, %[src]\n\t"
-      "mv   x11, %[dst]\n\t"
-      "mv   x12, %[size]\n\t"
-      ".word 0x00c515c2\n\t"
+      ".insn r 0x42, 1, 0, %[dst], %[src], %[size]\n\t"
       : [src] "=&r"(src_addr), [seg] "=&r"(seg),
         [dst] "=&r"(dst_addr)
       : [shared] "r"(shared_base), [size] "r"(copy_bytes),
         [dpw] "r"(dmas_per_warp), [base] "r"(src_base_offset),
         [stride] "r"(src_stride)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
 
-    __asm__ volatile(".word 0x00004042\n\t" ::: "memory");
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
   }
 
   uint warp_words = (dmas_per_warp * copy_bytes) / 4;

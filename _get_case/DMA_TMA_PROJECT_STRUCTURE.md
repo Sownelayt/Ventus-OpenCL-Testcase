@@ -10,6 +10,9 @@ Spike/GVM model 和仿真项目。详细设计、修复记录和验证结果仍�
 ```text
 ventus-env-copilot-test/
 ├── DMA_TMA_PREFETCH_DESCRIPTOR_RESEARCH.md      # prefetch/descriptor RTL 设计与验证主文档
+├── DMA_SHARED_TO_GLOBAL_RESEARCH.md             # S2G DMA 设计、实现和验证记录
+├── CUDA_TMA_BIDIRECTIONAL_RESEARCH.md           # CUDA 双向 TMA/cp.async 参考调研
+├── DMA_TMA_INSTRUCTION_DEFINITIONS.md           # 当前 DMA/TMA 指令定义总览
 ├── testcases/
 │   ├── DMA_TMA_RTL_TEST_DESIGN.md               # app-level directed testcase 设计与验证记录
 │   └── _get_case/
@@ -19,16 +22,19 @@ ventus-env-copilot-test/
 │       ├── common/                              # OpenCL host helper 和通用 Makefile 片段
 │       ├── dma_test/                            # legacy bulk DMA smoke
 │       ├── copysize_test/                       # legacy copysize smoke
-│       ├── tensor_dma_test/                     # legacy VGPR tensor DMA smoke
+│       ├── tensor_dma_test/                     # descriptor-form tensor DMA smoke
+│       ├── tensor_shared_to_global_test/        # descriptor-form tensor S2G smoke
 │       ├── tma_descriptor_test/                 # descriptor-addressed TMA + prefetch smoke
 │       ├── multi_wg_dma_test/                   # legacy multi-workgroup bulk DMA smoke
 │       ├── tma_matrix_test/                     # table-driven TMA matrix
 │       ├── bulk_dma_matrix_test/                # table-driven bulk DMA matrix
+│       ├── shared_to_global_dma_test/           # bulk shared->global S2G matrix
 │       ├── multi_warp_dma_fence_test/           # same-workgroup multi-warp DMA/fence matrix
 │       ├── dma_shared_routing_conflict_test/    # DMA shared response routing pressure
 │       └── tma/                                 # older standalone C++ TMA sample
 ├── gpgpu/
 │   ├── ventus/src/pipeline/DMA_core.scala       # DMA/TMA RTL 主实现
+│   ├── ventus/src/pipeline/DMA_s2g.scala        # bulk shared->global datapath
 │   ├── ventus/src/top/parameters.scala          # DMA/TMA 相关参数
 │   ├── ventus/src/top/GPGPU_top_nocache.scala   # no-cache GVM 的 DMA adapter/SMEM route
 │   ├── ventus/tests/src/DmaTest/                # Chisel RTL unit tests
@@ -41,23 +47,52 @@ ventus-env-copilot-test/
 
 ## 运行入口
 
-DMA/TMA app-level directed suite 的入口是：
+DMA/TMA app-level directed suite 的入口是 `run_dma_tma_rtl.sh`。默认仍跑完整 `directed` suite，但日常调试应优先用 suite/tag/case 过滤，避免每次拉起慢速 GVM 矩阵。
 
 ```sh
 source ./env.sh
-VENTUS_BACKEND=spike ./testcases/_get_case/run_dma_tma_rtl.sh /tmp/<spike-log-dir>
-./testcases/_get_case/run_dma_tma_rtl.sh /tmp/<gvm-log-dir>
+
+# 查看当前分组和标签
+./testcases/_get_case/run_dma_tma_rtl.sh --list --suite all
+
+# 快速循环：跳过最慢的 tma_matrix_test
+./testcases/_get_case/run_dma_tma_rtl.sh --suite quick /tmp/<quick-gvm-log-dir>
+
+# 只跑 PREFETCH_TENSORMAP / descriptor cache-key 相关测试
+./testcases/_get_case/run_dma_tma_rtl.sh --suite prefetch /tmp/<prefetch-gvm-log-dir>
+
+# 只跑 shared -> global bulk DMA 测试
+./testcases/_get_case/run_dma_tma_rtl.sh --suite s2g /tmp/<s2g-gvm-log-dir>
+
+# Spike 全量 directed sweep
+./testcases/_get_case/run_dma_tma_rtl.sh --backend spike --suite directed /tmp/<spike-log-dir>
+
+# 只跑 tma_matrix_test 的一个内部 case
+./testcases/_get_case/run_dma_tma_rtl.sh --case tma_matrix_test --run-arg FP32_2D_4x4_full /tmp/<one-case-log-dir>
 ```
+
+常用 suite/tag：
+
+| 选择器 | 覆盖对象 | 用途 |
+| --- | --- | --- |
+| `--suite directed` | 当前完整 directed suite | 合并前/收口验证 |
+| `--suite quick` | 跳过 `tma_matrix_test` 的 directed 子集 | 日常快速回归 |
+| `--suite smoke` / `--suite tma-smoke` | `tensor_dma_test`、`tma_descriptor_test` | descriptor TMA 基础连通性 |
+| `--suite prefetch` | `tma_descriptor_test` | `PREFETCH_TENSORMAP`、descriptor cache-key |
+| `--suite fence` | `tma_descriptor_test`、`multi_warp_dma_fence_test` | `CP_ASYNC_FENCE` / wait-all drain/inflight |
+| `--suite s2g` | `shared_to_global_dma_test`、`tensor_shared_to_global_test` | `CP_ASYNC_BULK_S2G` (`funct3=3`) + `CP_ASYNC_TENSOR_S2G` (`funct3=4`) |
+| `--suite matrix` | `tma_matrix_test` | 慢速 TMA 数据形态矩阵 |
+| `--tag funct2` / `funct3` / `funct4` / `funct5` / `funct6` | 对应 funct 覆盖 | 编码定向排查 |
 
 规则：
 
 - `.out` 必须从各 testcase 目录内启动。host 会按当前目录读取同名 `.cl`，从仓库根目录直接跑
-  `testcases/_get_case/<case>/<case>.out` 会导致 OpenCL build error `-44`。
-- `run_dma_tma_rtl.sh` 默认 `VENTUS_BACKEND=gvm`，Spike 需要显式设置 `VENTUS_BACKEND=spike`。
+  `testcases/_get_case/<case>/<case>.out` 会导致 OpenCL build error `-44`；runner 会自动进入 testcase 目录。
+- `run_dma_tma_rtl.sh` 默认 `VENTUS_BACKEND=gvm`，也可用 `--backend spike` 覆盖。
 - `VENTUS_TMA_RUN_RTL_ONLY=1` 只应影响 `tma_matrix_test` 的 GVM run；当前 runner 会自动处理。
 - 不要在 runner 中设置 `ulimit -s unlimited`。该设置会让 GVM 下 `tma_descriptor_test` 在 RTL trace
   前 host segfault。
-- `cases_dma_tma.csv` 是登记表；runner 当前只执行已验证的 directed 子集。
+- `cases_dma_tma.csv` 是登记表和分组来源；新增 testcase 时优先添加 `suites`/`tags`，不要在 runner 里硬编码集合。
 
 如果使用通用批量 runner：
 
@@ -73,13 +108,15 @@ python3 run_ventus_tests.py --cases cases_dma_tma.csv --backends spike,gvm --rto
 
 ## Directed App-Level 测试对象
 
-这些 case 会被 `run_dma_tma_rtl.sh` 执行，覆盖当前 DMA/TMA RTL 验证主路径。
+这些 case 属于 `run_dma_tma_rtl.sh --suite directed` 的主集，覆盖当前 DMA/TMA RTL 验证主路径。`--suite quick` 会跳过慢速 `tma_matrix_test`。
 
 | 项目 | 文件 | 内部测试对象 | 覆盖点 |
 | --- | --- | --- | --- |
-| `tma_descriptor_test/` | `tma_descriptor_test.c`、`tma_descriptor_test.cl` | `use_prefetch=0`、`use_prefetch=1` | descriptor-addressed `CP_ASYNC_TENSOR_G2S`；`PREFETCH_TENSORMAP` 后 descriptor cache 命中路径的端到端功能 |
-| `tma_matrix_test/` | `tma_matrix_test.c`、`tma_matrix_test.cl`、`run_tma_cases.sh`、`run_tma_quiet.sh` | 23 个 table-driven case | legacy VGPR `CP_ASYNC_TENSOR` 的 1D/2D/3D、dataType、subbox、elementStride、swizzle、OOB fill |
+| `tma_descriptor_test/` | `tma_descriptor_test.c`、`tma_descriptor_test.cl` | `use_prefetch=0`、`use_prefetch=1`、`prefetch_descA_then_tensor_descB`、`dual_tensor_single_fence` | descriptor-addressed `CP_ASYNC_TENSOR` (`funct=2`)；`PREFETCH_TENSORMAP` (`funct=5`) cache-key 隔离；`CP_ASYNC_FENCE` (`funct=6`) drain 多个 TMA inflight |
+| `tma_matrix_test/` | `tma_matrix_test.c`、`tma_matrix_test.cl`、`run_tma_cases.sh`、`run_tma_quiet.sh` | 23 个 table-driven case | descriptor-addressed `CP_ASYNC_TENSOR` (`funct=2`) 的 1D/2D/3D、dataType、subbox、elementStride、swizzle、OOB fill |
 | `bulk_dma_matrix_test/` | `bulk_dma_matrix_test.c`、`bulk_dma_matrix_test.cl` | 4 个 bulk case | `CP_ASYNC_BULK` 跨 128B cacheline、multi-cacheline、shared dst offset |
+| `shared_to_global_dma_test/` | `shared_to_global_dma_test.c`、`shared_to_global_dma_test.cl` | 6 个 S2G/roundtrip case | `CP_ASYNC_BULK_S2G` (`funct=3`) shared -> global；PutFull/PutPartial；global dst 跨线；G2S -> wait-all -> S2G roundtrip |
+| `tensor_shared_to_global_test/` | `tensor_shared_to_global_test.c`、`tensor_shared_to_global_test.cl` | 2 个 tensor S2G case | `CP_ASYNC_TENSOR_S2G` (`funct=4`) shared -> global；descriptor coords offset；guard bytes |
 | `multi_warp_dma_fence_test/` | `multi_warp_dma_fence_test.c`、`multi_warp_dma_fence_test.cl` | 4 个 multi-warp case | 同一 workgroup 内多个 warp 发 DMA；per-warp `CP_ASYNC_FENCE` inflight 释放 |
 | `dma_shared_routing_conflict_test/` | `dma_shared_routing_conflict_test.c`、`dma_shared_routing_conflict_test.cl` | 2 个 conflict case | DMA shared response 与普通 shared bank conflict replay 交叠时的 `sourceTag` 路由 |
 
@@ -102,14 +139,17 @@ tma_descriptor_test/
 
 - `use_prefetch=0`：直接用 descriptor pointer 和 dynamic coords 发 descriptor-addressed TMA。
 - `use_prefetch=1`：先发 `PREFETCH_TENSORMAP`，再发 descriptor-addressed TMA。
+- `prefetch_descA_then_tensor_descB`：先 prefetch descriptor A，再用 descriptor B 发 TMA，结果必须来自 B。
+- `dual_tensor_single_fence`：连续发两个 descriptor TMA 到 shared 不同区域，只用一个 `CP_ASYNC_FENCE` 等待完成。
 
 验证内容：
 
-- descriptor 在 global memory 中构造，rank=2、FP32、8x8 global tensor、4x4 box、坐标 `[2,2]`。
+- descriptor 在 global memory 中构造，rank=2、FP32、8x8 global tensor、4x4 box，两个 source/coords 组合分别使用坐标 `[2,2]` 和 `[1,3]`。
 - kernel patch runtime src pointer 后发 TMA，结果应等于 host replay 的 4x4 subbox。
 - Spike 中 prefetch 是 no-op；GVM 中 prefetch 走 RTL metadata L2 path 并填充 DMA-local descriptor cache。
-- 该 testcase 证明 prefetch/no-prefetch 两条 app-level 功能路径正确；prefetch issue path 提前释放和
-  descriptor cache skip L2 的微结构断言由 Chisel `TMA_T28/TMA_T29` 覆盖。
+- `prefetch_descA_then_tensor_descB` 防止 prefetch cache-key 或 cache-hit 路径把 A 的 descriptor 错误复用到 B。
+- `dual_tensor_single_fence` 验证一个 `CP_ASYNC_FENCE` 能等待两个连续 descriptor TMA inflight 都写完 shared。
+- prefetch issue path 提前释放和 descriptor cache skip L2 的微结构断言仍由 Chisel `TMA_T28/TMA_T29` 覆盖。
 
 ### `tma_matrix_test`
 
@@ -185,6 +225,38 @@ bulk_dma_matrix_test/
 | `bulk_192B_aligned` | 0 | 192 | 0 | 1.5 个 cacheline |
 | `bulk_64B_dst_offset` | 64 | 64 | 16 | shared 目的地址非 0 |
 
+### `shared_to_global_dma_test`
+
+目录结构：
+
+```text
+shared_to_global_dma_test/
+├── Makefile
+├── shared_to_global_dma_test.c
+├── shared_to_global_dma_test.cl
+├── shared_to_global_dma_test.out
+├── object0.cl
+├── object0.riscv
+└── object0.riscv.log
+```
+
+测试对象：
+
+| case | 模式 | `src_offset` | `copy_bytes` | `dst_offset` | 覆盖点 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `basic_128B_aligned` | S2G | 0 | 128 | 0 | 整 cacheline shared -> global，期望 PutFull |
+| `partial_32B` | S2G | 16 | 32 | 0 | 小尺寸 partial copy |
+| `partial_tail_96B` | S2G | 64 | 96 | 0 | 尾部非整 cacheline PutPartial |
+| `dst_offset_cross_line` | S2G | 0 | 64 | 112 | global dst 非对齐并跨 128B line |
+| `src_shared_offset_128B` | S2G | 48 | 128 | 32 | shared source 和 global dst 都带 offset |
+| `g2s_wait_s2g_roundtrip` | G2S+S2G | 0 | 128 | 0 | `CP_ASYNC_BULK` -> wait-all -> `CP_ASYNC_BULK_S2G` -> wait-all |
+
+维护说明：
+
+- kernel 先用普通 work-item store 填充 `__local`，再由 `lid==0` 发 S2G；发 DMA 前用 OpenCL `barrier(CLK_LOCAL_MEM_FENCE)` 拉齐 producer。
+- S2G 内联编码使用 `rd=x11, rs1=x10, rs2=x12`，即 `.word 0x00c535c2`。
+- host 同时检查目标拷贝区和 guard byte，确保 partial Put 没有覆盖邻近 global memory。
+
 ### `multi_warp_dma_fence_test`
 
 目录结构：
@@ -244,13 +316,13 @@ dma_shared_routing_conflict_test/
 ## 登记但非 Directed Runner 主集的测试对象
 
 这些项目保留在 `cases_dma_tma.csv` 或当前目录中，适合作为 legacy smoke/手工复现入口。它们不是
-`run_dma_tma_rtl.sh` 当前默认执行的 directed 子集。
+`run_dma_tma_rtl.sh --suite directed` 默认执行的主集，但可以用 `--suite legacy` 或 `--case <dir>` 单独运行。
 
 | 项目 | 文件 | 测试对象 | 覆盖点 |
 | --- | --- | --- | --- |
-| `dma_test/` | `dma_test.c`、`dma_test.cl` | 默认 `count=16`、`wg_size=32`；可用命令行覆盖 | 单 workgroup、warp leader 发 `CP_ASYNC_BULK + CP_ASYNC_FENCE` |
+| `dma_test/` | `dma_test.c`、`dma_test.cl` | 默认 `count=16`、`wg_size=32`；可用命令行覆盖 | 单 workgroup、warp leader 发 `CP_ASYNC_BULK + wait-all` |
 | `copysize_test/` | `copysize_test.c`、`copysize_test.cl` | 固定 `copysize=2`，16B/4 int | `CP_ASYNC_COPYSIZE` smoke |
-| `tensor_dma_test/` | `tensor_dma_test.c`、`tensor_dma_test.cl` | 固定 4x4 FP32 | legacy VGPR `CP_ASYNC_TENSOR` smoke |
+| `tensor_dma_test/` | `tensor_dma_test.c`、`tensor_dma_test.cl` | 固定 4x4 FP32 | descriptor-addressed `CP_ASYNC_TENSOR` (`funct=2`) smoke |
 | `multi_wg_dma_test/` | `multi_wg_dma_test.c`、`multi_wg_dma_test.cl` | 默认 2 WG、每 WG 16 int；可用命令行覆盖 | 多 workgroup bulk DMA，各 WG 独立 shared memory |
 | `tma/` | `main.cc`、`kernel.cl` | 旧 C++ `dma_3` sample | 早期 TMA smoke，未纳入 CSV 和 directed runner |
 
@@ -277,7 +349,9 @@ common/
 
 | 路径 | 责任 |
 | --- | --- |
-| `gpgpu/ventus/src/pipeline/DMA_core.scala` | DMA/TMA 主状态机；bulk、copysize、legacy tensor、descriptor-addressed TMA、prefetch metadata path、descriptor cache、OOB fill |
+| `gpgpu/ventus/src/pipeline/DMA_core.scala` | DMA/TMA 主状态机；G2S/S2G 分发；shared/L2/TLB 仲裁；bulk、copysize、descriptor-addressed `CP_ASYNC_TENSOR` (`funct=2`)、prefetch metadata path、descriptor cache、OOB fill、tensor S2G dispatch |
+| `gpgpu/ventus/src/pipeline/DMA_s2g.scala` | `CP_ASYNC_BULK_S2G` (`funct=3`) 串行 datapath；shared read、global dst TLB、L2 Put、AccessAck completion |
+| `gpgpu/ventus/src/pipeline/DMA_tma_s2g.scala` | `CP_ASYNC_TENSOR_S2G` (`funct=4`) 串行 datapath；shared read、descriptor fetch、global dst TLB、L2 Put、AccessAck completion |
 | `gpgpu/ventus/src/top/parameters.scala` | `l2cacheline=128B`、`dma_aligned_bulk=4B`、`tma_desc_cache_entries=2`、`tma_prefetch_slots=2` 等参数 |
 | `gpgpu/ventus/src/top/GPGPU_top_nocache.scala` | no-cache GVM 的 DMA cache request adapter 和 DMA/pipe shared response route |
 
@@ -331,7 +405,7 @@ gpgpu/ventus/tests/src/DmaTest/
 - `TMA_T22_2d_subbox_row_attribution`
 - `TMA_T24_2d_estride2_dim0_gather`
 - `TMA_T25_2d_padded_rows_row_attribution`
-- `TMA_T26_descriptor_g2s_fetches_descriptor_and_coords`
+- `TMA_T26_descriptor_funct3_fetches_descriptor_and_coords`
 - `TMA_T27_prefetch_tensormap_drops_payload_and_completes`
 - `TMA_T28_prefetch_releases_issue_path_before_response`
 - `TMA_T29_descriptor_cache_reuses_fetched_descriptor`
@@ -349,10 +423,10 @@ Spike 指令模型：
 ```text
 spike/riscv/insns/
 ├── cp_async_bulk.h
+├── cp_async_bulk_s2g.h
 ├── cp_async_copysize.h
 ├── cp_async_fence.h
-├── cp_async_tensor.h
-└── cp_async_tensor_g2s.h
+└── cp_async_tensor.h
 ```
 
 GVM reference：
@@ -403,20 +477,25 @@ gpgpu/sim-verilator-nocache/
 
 ## 当前验证快照
 
-最近一次 directed suite 结果：
+最近一次本轮 S2G/quick 回归结果：
 
-| backend | summary | log dir |
+| backend/suite | summary | log dir |
 | --- | --- | --- |
-| Spike | `backend=spike pass=5 fail=0` | `/tmp/codex-dma-tma-directed-spike-20260513-233547` |
-| GVM | `backend=gvm pass=5 fail=0` | `/tmp/codex-dma-tma-directed-gvm-20260513-235608` |
+| Spike `--suite s2g` | `shared_to_global_dma_test` 6/6 pass | `/tmp/codex-s2g-spike-20260518-171012` |
+| GVM `--suite s2g` | `shared_to_global_dma_test` 6/6 pass | `/tmp/codex-s2g-gvm-20260518-172902` |
+| Spike `--suite quick` | 6 个 testcase pass / 0 fail | `/tmp/codex-s2g-quick-spike-20260518-173014` |
+| GVM `--suite quick` | 6 个 testcase pass / 0 fail | `/tmp/codex-s2g-quick-gvm-20260518-173018` |
 
 逻辑子对象快照：
 
-- Spike：`tma_descriptor_test` 2 pass；`tma_matrix_test` 15 pass / 0 fail / 8 skip；
-  `bulk_dma_matrix_test` 4 pass；`multi_warp_dma_fence_test` 4 pass；
+- Spike：`tensor_dma_test` OK；`tma_descriptor_test` 4 pass；`tma_matrix_test` 15 pass / 0 fail / 8 skip；
+  `bulk_dma_matrix_test` 4 pass；`shared_to_global_dma_test` 6 pass；`multi_warp_dma_fence_test` 4 pass；
   `dma_shared_routing_conflict_test` 2 pass。
-- GVM：`tma_descriptor_test` 2 pass；`tma_matrix_test` 23 pass / 0 fail / 0 skip；
-  `bulk_dma_matrix_test` 4 pass；`multi_warp_dma_fence_test` 4 pass；
+- GVM：`tensor_dma_test` OK；`tma_descriptor_test` 4 pass；`tma_matrix_test` 23 pass / 0 fail / 0 skip；
+  `bulk_dma_matrix_test` 4 pass；`shared_to_global_dma_test` 6 pass；`multi_warp_dma_fence_test` 4 pass；
   `dma_shared_routing_conflict_test` 2 pass。
+
+本轮已重建并安装 Spike/GVM，已跑 `s2g` 和 `quick`。包含慢速 `tma_matrix_test` 的完整
+`--suite directed` 没有在本轮重新执行。
 
 case 数量会随覆盖扩展变化。判断回归时以当前运行输出的 `[n/m]`、`PASS/FAIL/SKIP` 和最终 summary 为准。

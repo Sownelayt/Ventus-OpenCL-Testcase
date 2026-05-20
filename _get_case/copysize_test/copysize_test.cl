@@ -42,7 +42,7 @@ dma_copysize(__global const int *src,
       /* CP_ASYNC_COPYSIZE: copysize=2, 16 bytes */
       ".word 0x04c505c2\n\t"
       /* CP_ASYNC_FENCE */
-      ".word 0x00004042\n\t"
+      ".word 0x00006042\n\t"
       : [src] "=&r"(dst_addr)
       : [dst] "r"(dst_addr)
       : "memory"

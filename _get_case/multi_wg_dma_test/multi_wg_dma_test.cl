@@ -49,10 +49,10 @@ multi_wg_dma_copy(__global const int *src,
       /* CP_ASYNC_BULK: rs1=x10, rs2=x12, rd=x11 */
       ".word 0x00c515c2\n\t"
       /* CP_ASYNC_FENCE */
-      ".word 0x00004042\n\t"
+      ".word 0x00006042\n\t"
       : [src] "=&r"(dst_addr), [tmp] "=&r"(tmp)
       : [dst] "r"(dst_addr), [size] "r"(byte_count)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
   }
 

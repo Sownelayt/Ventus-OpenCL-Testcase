@@ -4,7 +4,7 @@
  * Drives tma_matrix_kernel through a table of (dataType, rank, global shape,
  * box offset, box shape, elementStrides) configurations. For each config:
  *   1. Build a packed source buffer with a known byte-pattern.
- *   2. Construct the 96-word descriptor matching the config.
+ *   2. Construct a 128B tensor-map descriptor plus a 32-word coords block.
  *   3. Launch the kernel, read back dst.
  *   4. On host, compute the expected bytes by replaying the same indexing
  *      formula against the source buffer.
@@ -26,7 +26,9 @@
 #include "../common/ventus_opencl_test.h"
 
 #define MAX_RANK       5
-#define DESC_WORDS     96
+#define TENSOR_MAP_WORDS 32
+#define COORD_WORDS      32
+#define DESC_WORDS       (TENSOR_MAP_WORDS + COORD_WORDS)
 #define MAX_SRC_BYTES  (64 * 1024)
 #define MAX_BOX_BYTES  1024   /* must match SHARED_BUF_BYTES in the .cl */
 
@@ -42,9 +44,10 @@ typedef struct {
                                            tensor (per-dim element count) */
   unsigned    boxDim[MAX_RANK];     /* box extents */
   unsigned    elementStrides[MAX_RANK]; /* 1 = dense */
-  unsigned    swizzleMode;            /* VRS2[12]: 0/1/2/3 none/32B/64B/128B */
+  unsigned    interleaveMode;          /* descriptor control interleave: 0/1/2 none/16B/32B */
+  unsigned    swizzleMode;            /* descriptor control swizzle: 0/1/2/3 none/32B/64B/128B */
   unsigned    expect_oob;            /* compare logical OOB elements as fill */
-  unsigned    oobfill;               /* VRS2[14]: 0=zero, 1=float all-ones */
+  unsigned    oobfill;               /* descriptor control: 0=zero, 1=float all-ones */
   unsigned    rtl_only;              /* Spike lacks OOB and non-dim0 stride */
 } tma_config_t;
 
@@ -107,6 +110,35 @@ swizzle_offset(size_t logical_off, size_t row, unsigned mode)
   return (logical_off & ~(span - 1)) | ((chunk ^ row_low) << 4) | low;
 }
 
+static size_t
+tensor_physical_offset(const tma_config_t *c, const unsigned coord[MAX_RANK])
+{
+  unsigned es = elem_size(c->dataType);
+
+  if (c->interleaveMode == 0 || c->rank < 3) {
+    size_t off = (size_t)coord[0] * es;
+    for (unsigned d = 1; d < c->rank; d++) {
+      off += (size_t)coord[d] * c->globalStrides[d - 1];
+    }
+    return off;
+  }
+
+  size_t slice_bytes = c->interleaveMode == 1 ? 16u : 32u;
+  size_t channels_per_slice = es ? slice_bytes / es : 1u;
+  if (channels_per_slice == 0) channels_per_slice = 1;
+
+  size_t c_slice = coord[0] / channels_per_slice;
+  size_t c_in_slice = coord[0] % channels_per_slice;
+  size_t c_slice_stride =
+    (size_t)c->globalStrides[c->rank - 3] * c->globalDim[c->rank - 2];
+
+  size_t off = c_in_slice * es + c_slice * c_slice_stride;
+  for (unsigned d = 1; d < c->rank; d++) {
+    off += (size_t)coord[d] * c->globalStrides[d - 1];
+  }
+  return off;
+}
+
 static int
 rtl_directed_enabled(void)
 {
@@ -153,6 +185,54 @@ box_total_bytes(const tma_config_t *c)
 }
 
 static size_t
+box_storage_bytes(const tma_config_t *c)
+{
+  unsigned es = elem_size(c->dataType);
+  if (es == 0) return 0;
+
+  size_t total = 1;
+  unsigned out_dim[MAX_RANK] = {1, 1, 1, 1, 1};
+  for (unsigned d = 0; d < c->rank; d++) {
+    out_dim[d] = c->boxDim[d];
+    if (d > 0 && c->elementStrides[d] > 1) {
+      out_dim[d] = (c->boxDim[d] + c->elementStrides[d] - 1) /
+                   c->elementStrides[d];
+    }
+    total *= out_dim[d];
+  }
+
+  size_t max_end = 0;
+  for (size_t lin = 0; lin < total; lin++) {
+    unsigned idx[MAX_RANK] = {0};
+    size_t rem = lin;
+    for (unsigned d = 0; d < c->rank; d++) {
+      idx[d] = (unsigned)(rem % out_dim[d]);
+      rem   /= out_dim[d];
+    }
+
+    size_t dst_off = 0;
+    size_t dst_mul = es;
+    for (unsigned d = 0; d < c->rank; d++) {
+      dst_off += (size_t)idx[d] * dst_mul;
+      dst_mul *= out_dim[d];
+    }
+
+    size_t row = 0;
+    size_t row_mul = 1;
+    for (unsigned d = 1; d < c->rank; d++) {
+      row += (size_t)idx[d] * row_mul;
+      row_mul *= out_dim[d];
+    }
+    dst_off = swizzle_offset(dst_off, row, c->swizzleMode);
+
+    size_t end = dst_off + es;
+    if (end > max_end) max_end = end;
+  }
+
+  return max_end;
+}
+
+static size_t
 global_total_bytes(const tma_config_t *c)
 {
   /* Logical tensor footprint = (outermost stride) * (outermost dim) for rank
@@ -174,26 +254,20 @@ global_total_bytes(const tma_config_t *c)
     logical_bytes = (size_t)c->globalStrides[top - 1] * c->globalDim[top] + 64;
   }
 
-  size_t dstride[MAX_RANK];
-  dstride[0] = es;
-  for (unsigned d = 1; d < c->rank; d++) {
-    dstride[d] = c->globalStrides[d - 1];
-  }
-
-  size_t max_box_off = 0;
+  unsigned max_coord[MAX_RANK] = {0, 0, 0, 0, 0};
   for (unsigned d = 0; d < c->rank; d++) {
     unsigned out_dim = c->boxDim[d];
     if (d > 0 && c->elementStrides[d] > 1) {
       out_dim = (out_dim + c->elementStrides[d] - 1) /
                 c->elementStrides[d];
     }
-    if (out_dim == 0) continue;
-    max_box_off +=
-      ((size_t)c->boxOffsetElems[d] +
-       (size_t)(out_dim - 1) * c->elementStrides[d]) * dstride[d];
+    max_coord[d] = c->boxOffsetElems[d];
+    if (out_dim > 0) {
+      max_coord[d] += (out_dim - 1) * c->elementStrides[d];
+    }
   }
 
-  size_t physical_walk_bytes = max_box_off + es + 64;
+  size_t physical_walk_bytes = tensor_physical_offset(c, max_coord) + es + 64;
   return physical_walk_bytes > logical_bytes ? physical_walk_bytes : logical_bytes;
 }
 
@@ -201,16 +275,9 @@ global_total_bytes(const tma_config_t *c)
  * do, reading from host `src` and writing bytes to host `expected`. */
 static void
 compute_expected(const tma_config_t *c, const uint8_t *src,
-                 size_t src_offset_bytes, uint8_t *expected, size_t out_bytes)
+                 uint8_t *expected, size_t out_bytes)
 {
   unsigned es = elem_size(c->dataType);
-
-  /* Per-dim source byte stride */
-  size_t dstride[MAX_RANK];
-  dstride[0] = es;
-  for (unsigned d = 1; d < c->rank; d++) {
-    dstride[d] = c->globalStrides[d - 1];
-  }
 
   size_t total = 1;
   unsigned out_dim[MAX_RANK] = {1, 1, 1, 1, 1};
@@ -234,13 +301,13 @@ compute_expected(const tma_config_t *c, const uint8_t *src,
     }
 
     int oob = 0;
-    size_t src_off = src_offset_bytes;
+    unsigned global_coord[MAX_RANK] = {0, 0, 0, 0, 0};
     for (unsigned d = 0; d < c->rank; d++) {
-      unsigned global_idx =
-        c->boxOffsetElems[d] + idx[d] * c->elementStrides[d];
-      if (c->expect_oob && global_idx >= c->globalDim[d]) oob = 1;
-      src_off += (size_t)idx[d] * c->elementStrides[d] * dstride[d];
+      global_coord[d] = c->boxOffsetElems[d] +
+                        idx[d] * c->elementStrides[d];
+      if (c->expect_oob && global_coord[d] >= c->globalDim[d]) oob = 1;
     }
+    size_t src_off = tensor_physical_offset(c, global_coord);
 
     size_t dst_off = 0;
     size_t dst_mul = es;
@@ -261,31 +328,45 @@ compute_expected(const tma_config_t *c, const uint8_t *src,
   }
 }
 
-/* Build the 96-word descriptor that tma_matrix_kernel expects. */
+static uint32_t
+desc_control(unsigned data_type, unsigned rank,
+             unsigned interleave, unsigned swizzle,
+             unsigned l2promotion, unsigned oobfill)
+{
+  return (data_type & 0xfu) |
+         ((rank & 0xfu) << 4) |
+         ((interleave & 0x3u) << 8) |
+         ((swizzle & 0x3u) << 10) |
+         ((l2promotion & 0x3u) << 12) |
+         ((oobfill & 0x1u) << 14);
+}
+
+/* Build the descriptor ABI block that tma_matrix_kernel expects:
+ *   desc[0..31]  = 128B tensor-map descriptor
+ *   desc[32..63] = dynamic coords[0..4] loaded into VRS2 by the kernel */
 static void
-build_descriptor(const tma_config_t *c, uint32_t *desc,
-                 size_t box_offset_bytes)
+build_descriptor(const tma_config_t *c, uint32_t *desc)
 {
   memset(desc, 0, DESC_WORDS * sizeof(uint32_t));
 
-  /* VRS1 */
-  desc[0] = c->dataType;
-  desc[1] = c->rank;
-  desc[2] = 0;  /* globalAddress offset-from-src; kernel adds src base */
-  for (unsigned d = 0; d < c->rank; d++) desc[3 + d] = c->globalDim[d];
-  for (unsigned d = c->rank; d < 5; d++) desc[3 + d] = 1;
-  for (unsigned d = 0; d < c->rank; d++) desc[8 + d] = c->globalStrides[d];
+  desc[0] = 0x56544d41u;  /* "VTMA" */
+  desc[1] = desc_control(c->dataType, c->rank, c->interleaveMode,
+                         c->swizzleMode, 0, c->oobfill);
+  desc[2] = 0;            /* kernel patches runtime src pointer */
+  desc[3] = 128;
+  for (unsigned d = 0; d < c->rank; d++) desc[4 + d] = c->globalDim[d];
+  for (unsigned d = c->rank; d < 5; d++) desc[4 + d] = 1;
 
-  /* VRS2 */
-  desc[32] = (uint32_t)box_offset_bytes;  /* kernel adds src base */
-  for (unsigned d = 0; d < c->rank; d++) desc[33 + d] = c->boxDim[d];
-  for (unsigned d = c->rank; d < 5; d++) desc[33 + d] = 1;
-  for (unsigned d = 0; d < c->rank; d++) desc[38 + d] = c->elementStrides[d];
-  for (unsigned d = c->rank; d < 5; d++) desc[38 + d] = 1;
-  desc[44] = c->swizzleMode;
-  desc[46] = c->oobfill;
+  desc[9] = elem_size(c->dataType);
+  for (unsigned d = 1; d < c->rank; d++) desc[9 + d] = c->globalStrides[d - 1];
+  for (unsigned d = 0; d < c->rank; d++) desc[14 + d] = c->boxDim[d];
+  for (unsigned d = c->rank; d < 5; d++) desc[14 + d] = 1;
+  for (unsigned d = 0; d < c->rank; d++) desc[19 + d] = c->elementStrides[d];
+  for (unsigned d = c->rank; d < 5; d++) desc[19 + d] = 1;
 
-  /* VRS3 — kernel writes param_buf[64] at runtime */
+  for (unsigned d = 0; d < c->rank; d++) {
+    desc[TENSOR_MAP_WORDS + d] = c->boxOffsetElems[d];
+  }
 }
 
 /* ----- Test matrix -----
@@ -344,6 +425,29 @@ static const tma_config_t g_cases[] = {
     .boxOffsetElems = {0, 0, 0, 0, 0},
     .boxDim = {2, 2, 2, 1, 1},
     .elementStrides = {1, 1, 1, 1, 1},
+  },
+  /* 5a. 3D FP32 interleave16, layout like NC/4WC4 for FP32. */
+  {
+    .name = "FP32_3D_interleave16_C6_W3_N2",
+    .dataType = 6, .rank = 3,
+    .globalDim = {6, 3, 2, 1, 1},
+    .globalStrides = {16, 96, 0, 0, 0},
+    .boxOffsetElems = {0, 1, 1, 0, 0},
+    .boxDim = {6, 2, 1, 1, 1},
+    .elementStrides = {1, 1, 1, 1, 1},
+    .interleaveMode = 1,
+  },
+  /* 5b. 3D FP32 interleave32 + swizzle32 crosses the C-slice boundary. */
+  {
+    .name = "FP32_3D_interleave32_swizzle32_C10_W2",
+    .dataType = 6, .rank = 3,
+    .globalDim = {10, 2, 1, 1, 1},
+    .globalStrides = {32, 128, 0, 0, 0},
+    .boxOffsetElems = {0, 0, 0, 0, 0},
+    .boxDim = {10, 2, 1, 1, 1},
+    .elementStrides = {1, 1, 1, 1, 1},
+    .interleaveMode = 2,
+    .swizzleMode = 1,
   },
   /* 6. 2D FP16 8x4 full.
    *
@@ -586,15 +690,8 @@ run_one(cl_context context, cl_command_queue queue, cl_kernel kernel,
     return 0;
   }
 
-  /* Host-side byte offset of the box origin into the full tensor */
-  size_t box_offset_bytes = 0;
-  for (unsigned d = 0; d < c->rank; d++) {
-    size_t dstride = (d == 0) ? es : c->globalStrides[d - 1];
-    box_offset_bytes += (size_t)c->boxOffsetElems[d] * dstride;
-  }
-
   size_t src_bytes = global_total_bytes(c);
-  size_t dst_bytes = box_total_bytes(c);
+  size_t dst_bytes = box_storage_bytes(c);
 
   if (src_bytes > MAX_SRC_BYTES) {
     printf("  SKIP: src_bytes=%zu > MAX_SRC_BYTES=%d\n",
@@ -618,14 +715,17 @@ run_one(cl_context context, cl_command_queue queue, cl_kernel kernel,
   }
 
   fill_src_pattern(src_host, src_bytes);
-  build_descriptor(c, desc, box_offset_bytes);
-  compute_expected(c, src_host, box_offset_bytes, expected_host, dst_bytes);
+  build_descriptor(c, desc);
+  compute_expected(c, src_host, expected_host, dst_bytes);
 
   cl_int err;
   cl_mem desc_buf = clCreateBuffer(context,
-    CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-    DESC_WORDS * sizeof(uint32_t), desc, &err);
+    CL_MEM_READ_WRITE, DESC_WORDS * sizeof(uint32_t), NULL, &err);
   if (err != CL_SUCCESS) goto failed;
+  err = clEnqueueWriteBuffer(queue, desc_buf, CL_TRUE, 0,
+                             DESC_WORDS * sizeof(uint32_t), desc,
+                             0, NULL, NULL);
+  if (err != CL_SUCCESS) { clReleaseMemObject(desc_buf); goto failed; }
 
   cl_mem src_buf = clCreateBuffer(context,
     CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, src_bytes, src_host, &err);

@@ -45,7 +45,7 @@ dma_shared_routing_conflict_kernel(__global const uchar *src,
       : [src] "=&r"(src_addr)
       : [off] "r"(src_offset), [dst] "r"(dst_addr),
         [size] "r"(copy_bytes)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
   }
 
@@ -60,7 +60,7 @@ dma_shared_routing_conflict_kernel(__global const uchar *src,
   }
 
   if (lid == 0) {
-    __asm__ volatile(".word 0x00004042\n\t" ::: "memory");
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
   }
   barrier(CLK_LOCAL_MEM_FENCE);
 

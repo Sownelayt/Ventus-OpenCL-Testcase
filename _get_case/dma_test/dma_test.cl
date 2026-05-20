@@ -5,7 +5,7 @@
  *
  * DMA instruction encoding (R-type, opcode 0x42):
  *   CP_ASYNC_BULK:  funct3=1, rs1=src_global_addr, rs2=byte_count, rd=dst_shared_addr
- *   CP_ASYNC_FENCE: funct3=4, all regs=x0
+ *   CP_ASYNC_FENCE: funct3=6, all regs=x0
  *
  * All three operands use scalar registers:
  *   A1 = A1_RS1  (scalar rs1) → in1 (global source address)
@@ -55,10 +55,10 @@ dma_copy(__global const int *src,
       /* CP_ASYNC_BULK: rs1=x10(src), rs2=x12(size), rd=x11(dst_shared) */
       ".word 0x00c515c2\n\t"
       /* CP_ASYNC_FENCE: wait for DMA completion */
-      ".word 0x00004042\n\t"
+      ".word 0x00006042\n\t"
       : [src] "=&r"(dst_addr)
       : [dst] "r"(dst_addr), [size] "r"(byte_count)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
   }
 

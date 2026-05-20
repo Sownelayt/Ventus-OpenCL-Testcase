@@ -15,10 +15,10 @@ __kernel void dma_3(__global const float *input, __global float *output) {
       "mv   x11, %[dst]\n\t"
       "mv   x12, %[size]\n\t"
       ".word 0x00c515c2\n\t"
-      ".word 0x00004042\n\t"
+      ".word 0x00006042\n\t"
       : [src] "=&r"(src_addr)
       : [dst] "r"(dst_addr), [size] "r"(byte_count)
-      : "memory", "x10", "x11", "x12"
+      : "memory"
     );
   }
 
