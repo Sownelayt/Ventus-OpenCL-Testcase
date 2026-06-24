@@ -11,7 +11,11 @@
 #   1. source env.sh so OpenCL apps use the repo-local Ventus install.
 #   2. select cases from cases_dma_tma.csv by suite, tag, or explicit case.
 #   3. build selected cases unless --no-build is used.
-#   4. run each case from its own directory and save full logs under log_dir.
+#   4. run each case from its own directory and save full logs under the
+#      case's own log/ directory. The top-level log_dir keeps runner summaries.
+#      For the full GVM suite, tma_matrix_test can run in parallel with the
+#      remaining selected cases because it usually takes about as long as the
+#      rest of the suite combined.
 #
 # Usage examples:
 #   ./run_dma_tma_rtl.sh --list
@@ -38,7 +42,10 @@ LOG_DIR=""
 LIST_ONLY=0
 NO_BUILD=0
 JOBS=0
+RUN_JOBS=0
 TIMEOUT_S=0
+PARALLEL_SPLIT=auto
+MATRIX_SPLIT_AT=${TMA_MATRIX_SPLIT_AT:-17}
 SUITE_SPECIFIED=0
 TAG_SPECIFIED=0
 CASE_SPECIFIED=0
@@ -57,9 +64,13 @@ Options:
   --tag TAG[,TAG]         Select by tag, intersected with suite/case filters.
   --case DIR[,DIR]        Select explicit testcase directory names.
   --run-arg ARG           Append ARG to the testcase command. Useful for one tma_matrix case.
-  --log-dir DIR           Directory for build/run logs.
+  --log-dir DIR           Directory for runner summaries. Per-case logs go under each case's log/.
   --jobs N                Pass -jN to make.
+  --run-jobs N            Run up to N testcase directories in parallel, max 3.
   --timeout SEC           Per-case timeout. 0 means no timeout.
+  --parallel-split        Run tma_matrix_test and remaining cases in two lanes.
+  --no-parallel-split     Disable automatic GVM two-lane scheduling.
+  --matrix-split-at N     Split tma_matrix_test after 1-based case N. Default: 17.
   --no-build              Skip make before running.
   --list                  List matching cases and exit.
   -h, --help              Show this help.
@@ -67,6 +78,10 @@ Options:
 Common suites:
   directed   Full validated DMA/TMA directed suite.
   quick      Skip the slow tma_matrix_test; good for most edit/check loops.
+  merged     New non-destructive merged DMA/TMA project suite.
+  full       Functional full suite: merged projects plus tma_matrix_test.
+  perf-quick Representative points from the retained performance projects.
+  perf-full  Full sweeps from the retained performance projects.
   smoke      tensor_dma_test + tma_descriptor_test.
   prefetch   PREFETCH_TENSORMAP coverage in tma_descriptor_test.
   fence      CP_ASYNC_FENCE coverage in descriptor/bulk fence tests.
@@ -184,10 +199,28 @@ while [[ $# -gt 0 ]]; do
       JOBS=$2
       shift 2
       ;;
+    --run-jobs)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --run-jobs needs a value" >&2; exit 2; }
+      RUN_JOBS=$2
+      shift 2
+      ;;
     --timeout)
       [[ $# -ge 2 ]] || { echo "[ERROR] --timeout needs a value" >&2; exit 2; }
       TIMEOUT_S=$2
       shift 2
+      ;;
+    --parallel-split)
+      PARALLEL_SPLIT=1
+      shift
+      ;;
+    --matrix-split-at)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --matrix-split-at needs a value" >&2; exit 2; }
+      MATRIX_SPLIT_AT=$2
+      shift 2
+      ;;
+    --no-parallel-split|--serial)
+      PARALLEL_SPLIT=0
+      shift
       ;;
     --no-build)
       NO_BUILD=1
@@ -218,6 +251,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+
+if [[ ! "$RUN_JOBS" =~ ^[0-9]+$ ]]; then
+  echo "[ERROR] --run-jobs must be a positive integer" >&2
+  exit 2
+fi
+if [[ "$RUN_JOBS" -eq 0 ]]; then
+  case "$BACKEND" in
+    spike) RUN_JOBS=3 ;;
+    gvm|gvm-nocache) RUN_JOBS=2 ;;
+    *) RUN_JOBS=1 ;;
+  esac
+fi
+if [[ "$RUN_JOBS" -lt 1 || "$RUN_JOBS" -gt 3 ]]; then
+  echo "[ERROR] --run-jobs must be between 1 and 3" >&2
+  exit 2
+fi
+
 # If the user names explicit cases without suite/tag filters, do not keep the
 # default directed suite filter. This makes legacy one-off runs ergonomic.
 if [[ $CASE_SPECIFIED -eq 1 && $SUITE_SPECIFIED -eq 0 && $TAG_SPECIFIED -eq 0 ]]; then
@@ -226,6 +276,7 @@ fi
 
 export VENTUS_BACKEND="$BACKEND"
 LOG_DIR=${LOG_DIR:-/tmp/codex-dma-tma-suite-$(date +%Y%m%d-%H%M%S)}
+RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 mkdir -p "$LOG_DIR"
 SUMMARY_CSV="$LOG_DIR/summary.csv"
 echo "case,backend,rc,time_s,run_log" > "$SUMMARY_CSV"
@@ -236,7 +287,7 @@ if [[ ! -f "$CSV" ]]; then
   exit 1
 fi
 
-while IFS=, read -r dir exe run_cmd check_mode suites tags backends rest; do
+while IFS=, read -r dir exe run_cmd check_mode suites tags backends run_label rest; do
   dir=${dir//$'\r'/}
   exe=${exe//$'\r'/}
   run_cmd=${run_cmd//$'\r'/}
@@ -244,6 +295,7 @@ while IFS=, read -r dir exe run_cmd check_mode suites tags backends rest; do
   suites=${suites//$'\r'/}
   tags=${tags//$'\r'/}
   backends=${backends//$'\r'/}
+  run_label=${run_label//$'\r'/}
 
   [[ -z "$dir" || "$dir" == "dir" || "$dir" == \#* ]] && continue
   [[ -n "$suites" ]] || suites=legacy
@@ -255,7 +307,7 @@ while IFS=, read -r dir exe run_cmd check_mode suites tags backends rest; do
   token_match_any "$tags" "${TAGS[@]}" || continue
   case_match_any "$dir" "${CASES[@]}" || continue
 
-  selected_rows+=("$dir,$exe,$run_cmd,$check_mode,$suites,$tags")
+  selected_rows+=("$dir,$exe,$run_cmd,$check_mode,$suites,$tags,$run_label")
 done < "$CSV"
 
 if [[ ${#selected_rows[@]} -eq 0 ]]; then
@@ -264,15 +316,15 @@ if [[ ${#selected_rows[@]} -eq 0 ]]; then
   exit 1
 fi
 
-printf '[SELECT] backend=%s suites=%s tags=%s cases=%s count=%d log_dir=%s\n' \
+printf '[SELECT] backend=%s suites=%s tags=%s cases=%s count=%d run_jobs=%d log_dir=%s\n' \
   "$BACKEND" "$(join_by , "${SUITES[@]}")" "$(join_by , "${TAGS[@]}")" \
-  "$(join_by , "${CASES[@]}")" "${#selected_rows[@]}" "$LOG_DIR"
+  "$(join_by , "${CASES[@]}")" "${#selected_rows[@]}" "$RUN_JOBS" "$LOG_DIR"
 
 if [[ $LIST_ONLY -eq 1 ]]; then
   printf '%-34s %-24s %-58s %s\n' "case" "suites" "tags" "command"
   printf '%-34s %-24s %-58s %s\n' "----" "------" "----" "-------"
   for row in "${selected_rows[@]}"; do
-    IFS=, read -r dir exe run_cmd check_mode suites tags <<< "$row"
+    IFS=, read -r dir exe run_cmd check_mode suites tags run_label <<< "$row"
     [[ -n "$run_cmd" ]] || run_cmd="./$exe"
     printf '%-34s %-24s %-58s %s\n' "$dir" "$suites" "$tags" "$run_cmd"
   done
@@ -283,21 +335,23 @@ if [[ ${#RUN_ARGS[@]} -gt 0 && ${#selected_rows[@]} -gt 1 ]]; then
   echo "[WARN] --run-arg is being appended to multiple selected cases" >&2
 fi
 
-pass_count=0
-fail_count=0
 run_arg_q=$(quote_run_args)
 
-for row in "${selected_rows[@]}"; do
-  IFS=, read -r dir exe run_cmd check_mode suites tags <<< "$row"
-  case_dir="$SCRIPT_DIR/$dir"
-  build_log="$LOG_DIR/${dir}.${BACKEND}.build.log"
-  run_log="$LOG_DIR/${dir}.${BACKEND}.log"
+prepare_case_row() {
+  local row=$1
+  local dir exe run_cmd check_mode suites tags run_label
+  IFS=, read -r dir exe run_cmd check_mode suites tags run_label <<< "$row"
+  local case_dir="$SCRIPT_DIR/$dir"
+  local rc
 
   if [[ ! -d "$case_dir" ]]; then
     echo "[FAIL] $dir missing case directory"
-    fail_count=$((fail_count + 1))
-    continue
+    return 1
   fi
+
+  local case_log_dir="$case_dir/log"
+  mkdir -p "$case_log_dir"
+  local build_log="$case_log_dir/${dir}.${BACKEND}.${RUN_STAMP}.build.log"
 
   if [[ $NO_BUILD -eq 0 ]]; then
     echo "[BUILD] $dir"
@@ -311,28 +365,54 @@ for row in "${selected_rows[@]}"; do
       rc=$?
       echo "[BUILD] $dir FAIL rc=$rc"
       tail -n 40 "$build_log" || true
-      fail_count=$((fail_count + 1))
-      continue
+      return 1
     fi
   elif [[ ! -x "$case_dir/$exe" ]]; then
     echo "[FAIL] $dir missing executable $exe and --no-build was used"
-    fail_count=$((fail_count + 1))
-    continue
+    return 1
   fi
+}
+
+run_case_row() {
+  local row=$1
+  local summary_file=$2
+  local dir exe run_cmd check_mode suites tags run_label
+  IFS=, read -r dir exe run_cmd check_mode suites tags run_label <<< "$row"
+  local case_dir="$SCRIPT_DIR/$dir"
+  local run_name=${run_label:-$dir}
+  local case_log_dir="$case_dir/log"
+  mkdir -p "$case_log_dir"
+  local run_log="$case_log_dir/${run_name}.${BACKEND}.${RUN_STAMP}.run.log"
+  local cmd start end elapsed rc work_dir
 
   [[ -n "$run_cmd" ]] || run_cmd="./$exe"
   cmd="$run_cmd$run_arg_q"
 
-  echo "[RUN] $dir :: $cmd"
+  work_dir="$case_dir"
+  if [[ "$dir" == "tma_matrix_test" ]]; then
+    work_dir="$case_log_dir/work/${run_name}.${BACKEND}.${RUN_STAMP}"
+    mkdir -p "$work_dir"
+    ln -sf "$case_dir/$exe" "$work_dir/$exe"
+    local src
+    for src in "$case_dir"/*.cl; do
+      [[ -e "$src" ]] || continue
+      ln -sf "$src" "$work_dir/$(basename "$src")"
+    done
+  fi
+
+  echo "[RUN] $run_name :: $cmd"
   start=$(date +%s)
   (
-    cd "$case_dir" || exit 1
+    cd "$work_dir" || exit 1
     export VENTUS_BACKEND="$BACKEND"
-    if [[ "$BACKEND" == "gvm" && "$dir" == "tma_matrix_test" ]]; then
-      export VENTUS_TMA_RUN_RTL_ONLY=${VENTUS_TMA_RUN_RTL_ONLY:-1}
-    else
-      unset VENTUS_TMA_RUN_RTL_ONLY || true
-    fi
+    case "$BACKEND:$dir" in
+      gvm:dma_tma_g2s_func_test|gvm-nocache:dma_tma_g2s_func_test|rtl:dma_tma_g2s_func_test|rtl-nocache:dma_tma_g2s_func_test|gvm:tma_matrix_test|gvm-nocache:tma_matrix_test|rtl:tma_matrix_test|rtl-nocache:tma_matrix_test)
+        export VENTUS_TMA_RUN_RTL_ONLY=${VENTUS_TMA_RUN_RTL_ONLY:-1}
+        ;;
+      *)
+        unset VENTUS_TMA_RUN_RTL_ONLY || true
+        ;;
+    esac
     if [[ "$TIMEOUT_S" != "0" ]]; then
       timeout "$TIMEOUT_S" bash -c "$cmd"
     else
@@ -342,17 +422,222 @@ for row in "${selected_rows[@]}"; do
   rc=$?
   end=$(date +%s)
   elapsed=$((end - start))
-  echo "$dir,$BACKEND,$rc,$elapsed,$run_log" >> "$SUMMARY_CSV"
+  echo "$run_name,$BACKEND,$rc,$elapsed,$run_log" >> "$summary_file"
 
   if [[ $rc -eq 0 ]]; then
-    echo "[PASS] $dir (${elapsed}s)"
-    pass_count=$((pass_count + 1))
+    echo "[PASS] $run_name (${elapsed}s)"
+    return 0
   else
-    echo "[FAIL] $dir rc=$rc (${elapsed}s)"
+    echo "[FAIL] $run_name rc=$rc (${elapsed}s)"
     grep -E "PASS|FAIL|FAILED|OK|SKIP|summary|pass:|fail:|skip:|GVM ERROR|PC mismatch|fatal|FATAL|error|Error" "$run_log" | tail -n 80 || tail -n 40 "$run_log" || true
+    return 1
+  fi
+}
+
+row_dir_from_row() {
+  local row=$1
+  local dir exe run_cmd check_mode suites tags run_label
+  IFS=, read -r dir exe run_cmd check_mode suites tags run_label <<< "$row"
+  printf '%s' "$dir"
+}
+
+active_dir_present() {
+  local target=$1
+  shift
+  local dir
+  for dir in "$@"; do
+    [[ "$dir" == "$target" ]] && return 0
+  done
+  return 1
+}
+
+run_rows_parallel_lane() {
+  local lane_name=$1
+  local summary_file=$2
+  local stats_file=$3
+  local lane_jobs=$4
+  shift 4
+  local rows=("$@")
+  local total=${#rows[@]}
+  local next=0 seq=0 lane_pass=0 lane_fail=0
+  local active_pids=()
+  local active_dirs=()
+  local active_summaries=()
+  local active_stats=()
+
+  echo "[LANE] $lane_name start count=$total run_jobs=$lane_jobs"
+  while [[ $next -lt $total || ${#active_pids[@]} -gt 0 ]]; do
+    local launched=0
+    while [[ $next -lt $total && ${#active_pids[@]} -lt $lane_jobs ]]; do
+      local row=${rows[$next]}
+      local dir
+      dir=$(row_dir_from_row "$row")
+      if active_dir_present "$dir" "${active_dirs[@]}"; then
+        break
+      fi
+
+      seq=$((seq + 1))
+      local child_summary="${summary_file}.${seq}.tmp"
+      local child_stats="${stats_file}.${seq}.tmp"
+      : > "$child_summary"
+      (
+        if run_case_row "$row" "$child_summary"; then
+          echo "1,0" > "$child_stats"
+        else
+          echo "0,1" > "$child_stats"
+        fi
+      ) &
+      active_pids+=("$!")
+      active_dirs+=("$dir")
+      active_summaries+=("$child_summary")
+      active_stats+=("$child_stats")
+      next=$((next + 1))
+      launched=1
+    done
+
+    [[ ${#active_pids[@]} -gt 0 ]] || continue
+    if [[ $launched -eq 0 || ${#active_pids[@]} -ge $lane_jobs || $next -ge $total ]]; then
+      local pid=${active_pids[0]}
+      wait "$pid" || true
+      cat "${active_summaries[0]}" >> "$summary_file"
+      local p=0 f=0
+      if [[ -f "${active_stats[0]}" ]]; then
+        IFS=, read -r p f < "${active_stats[0]}"
+      fi
+      lane_pass=$((lane_pass + p))
+      lane_fail=$((lane_fail + f))
+      active_pids=("${active_pids[@]:1}")
+      active_dirs=("${active_dirs[@]:1}")
+      active_summaries=("${active_summaries[@]:1}")
+      active_stats=("${active_stats[@]:1}")
+    fi
+  done
+
+  echo "$lane_pass,$lane_fail" > "$stats_file"
+  echo "[LANE] $lane_name done pass=$lane_pass fail=$lane_fail"
+}
+
+run_rows_lane() {
+  local lane_name=$1
+  local summary_file=$2
+  local stats_file=$3
+  local lane_jobs=$4
+  shift 4
+  local row lane_pass=0 lane_fail=0
+
+  if [[ "$lane_jobs" -gt 1 && $# -gt 1 ]]; then
+    run_rows_parallel_lane "$lane_name" "$summary_file" "$stats_file" "$lane_jobs" "$@"
+    return
+  fi
+
+  echo "[LANE] $lane_name start count=$# run_jobs=1"
+  for row in "$@"; do
+    if run_case_row "$row" "$summary_file"; then
+      lane_pass=$((lane_pass + 1))
+    else
+      lane_fail=$((lane_fail + 1))
+    fi
+  done
+  echo "$lane_pass,$lane_fail" > "$stats_file"
+  echo "[LANE] $lane_name done pass=$lane_pass fail=$lane_fail"
+}
+
+read_lane_stats() {
+  local stats_file=$1
+  local p=0 f=0
+  if [[ -f "$stats_file" ]]; then
+    IFS=, read -r p f < "$stats_file"
+  fi
+  pass_count=$((pass_count + p))
+  fail_count=$((fail_count + f))
+}
+
+pass_count=0
+fail_count=0
+runnable_rows=()
+
+for row in "${selected_rows[@]}"; do
+  if prepare_case_row "$row"; then
+    runnable_rows+=("$row")
+  else
     fail_count=$((fail_count + 1))
   fi
 done
+
+matrix_rows=()
+other_rows=()
+can_split_matrix=0
+if [[ ${#RUN_ARGS[@]} -eq 0 ]]; then
+  if [[ "$PARALLEL_SPLIT" == "1" || ("$PARALLEL_SPLIT" == "auto" && "$BACKEND" == "gvm") ]]; then
+    can_split_matrix=1
+  fi
+fi
+
+for row in "${runnable_rows[@]}"; do
+  IFS=, read -r dir exe run_cmd check_mode suites tags run_label <<< "$row"
+  if [[ "$dir" == "tma_matrix_test" && $can_split_matrix -eq 1 ]]; then
+    if [[ ! "$MATRIX_SPLIT_AT" =~ ^[0-9]+$ || "$MATRIX_SPLIT_AT" -lt 1 ]]; then
+      echo "[ERROR] --matrix-split-at must be a positive integer" >&2
+      exit 2
+    fi
+    second_start=$((MATRIX_SPLIT_AT + 1))
+    matrix_rows+=("$dir,$exe,./$exe --range 1 $MATRIX_SPLIT_AT,$check_mode,$suites,$tags,tma_matrix_test_1_${MATRIX_SPLIT_AT}")
+    other_rows+=("$dir,$exe,./$exe --range $second_start end,$check_mode,$suites,$tags,tma_matrix_test_${second_start}_end")
+  elif [[ "$dir" == "tma_matrix_test" ]]; then
+    matrix_rows+=("$row")
+  else
+    other_rows+=("$row")
+  fi
+done
+
+run_parallel=0
+if [[ ${#matrix_rows[@]} -gt 0 && ${#other_rows[@]} -gt 0 ]]; then
+  if [[ "$PARALLEL_SPLIT" == "1" ]]; then
+    run_parallel=1
+  elif [[ "$PARALLEL_SPLIT" == "auto" && "$BACKEND" == "gvm" ]]; then
+    run_parallel=1
+  fi
+fi
+
+if [[ ${#runnable_rows[@]} -eq 0 ]]; then
+  echo "[SUMMARY] backend=$BACKEND pass=$pass_count fail=$fail_count log_dir=$LOG_DIR summary=$SUMMARY_CSV"
+  exit 1
+fi
+
+if [[ "$PARALLEL_SPLIT" == "1" && $run_parallel -eq 0 ]]; then
+  echo "[SCHED] --parallel-split requested but selected runnable cases do not contain both tma_matrix_test and other cases; using serial"
+fi
+
+if [[ $run_parallel -eq 1 ]]; then
+  matrix_lane_jobs=1
+  other_lane_jobs=$((RUN_JOBS - 1))
+  if [[ $other_lane_jobs -lt 1 ]]; then other_lane_jobs=1; fi
+  echo "[SCHED] parallel-split=on matrix_lane=${#matrix_rows[@]} other_lane=${#other_rows[@]} run_jobs=$RUN_JOBS"
+  matrix_summary="$LOG_DIR/summary.matrix.tmp.csv"
+  other_summary="$LOG_DIR/summary.other.tmp.csv"
+  matrix_stats="$LOG_DIR/summary.matrix.stats"
+  other_stats="$LOG_DIR/summary.other.stats"
+  : > "$matrix_summary"
+  : > "$other_summary"
+
+  run_rows_lane "matrix" "$matrix_summary" "$matrix_stats" "$matrix_lane_jobs" "${matrix_rows[@]}" &
+  matrix_pid=$!
+  run_rows_lane "other" "$other_summary" "$other_stats" "$other_lane_jobs" "${other_rows[@]}" &
+  other_pid=$!
+  wait "$matrix_pid"
+  wait "$other_pid"
+
+  cat "$matrix_summary" "$other_summary" >> "$SUMMARY_CSV"
+  read_lane_stats "$matrix_stats"
+  read_lane_stats "$other_stats"
+else
+  serial_summary="$LOG_DIR/summary.serial.tmp.csv"
+  serial_stats="$LOG_DIR/summary.serial.stats"
+  : > "$serial_summary"
+  run_rows_lane "serial" "$serial_summary" "$serial_stats" "$RUN_JOBS" "${runnable_rows[@]}"
+  cat "$serial_summary" >> "$SUMMARY_CSV"
+  read_lane_stats "$serial_stats"
+fi
 
 echo "[SUMMARY] backend=$BACKEND pass=$pass_count fail=$fail_count log_dir=$LOG_DIR summary=$SUMMARY_CSV"
 

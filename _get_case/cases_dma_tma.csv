@@ -1,13 +1,12 @@
-dir,exe,run_cmd,check_mode,suites,tags,backends
-dma_test,dma_test.out,,verdict,legacy|bulk-smoke,funct1|funct6|bulk|wait_all,spike|gvm|gvm-nocache|rtl|rtl-nocache
-copysize_test,copysize_test.out,,verdict,legacy|copysize,funct0|funct6|copysize,spike|gvm|gvm-nocache|rtl|rtl-nocache
-multi_wg_dma_test,multi_wg_dma_test.out,,verdict,legacy|bulk-smoke,funct1|funct6|bulk|multi-wg,spike|gvm|gvm-nocache|rtl|rtl-nocache
-tensor_dma_test,tensor_dma_test.out,,verdict,directed|quick|smoke|tma-smoke|tma|funct2,funct2|tensor|descriptor,spike|gvm|gvm-nocache|rtl|rtl-nocache
-tma_descriptor_test,tma_descriptor_test.out,,verdict,directed|quick|smoke|tma-smoke|prefetch|fence|tma|funct2|funct5|funct6,funct2|funct5|funct6|descriptor|prefetch|wait_all|single-fence,spike|gvm|gvm-nocache|rtl|rtl-nocache
-tma_matrix_test,tma_matrix_test.out,,verdict,directed|full|matrix|tma-matrix|tma|funct2|slow,funct2|descriptor|datatype|subbox|stride|swizzle|oob|slow,spike|gvm|gvm-nocache|rtl|rtl-nocache
-bulk_dma_matrix_test,bulk_dma_matrix_test.out,,verdict,directed|quick|bulk|funct1,funct1|funct6|bulk|cacheline,spike|gvm|gvm-nocache|rtl|rtl-nocache
-shared_to_global_dma_test,shared_to_global_dma_test.out,,verdict,directed|quick|s2g|bulk|funct3,funct3|s2g|bulk|wait_all|roundtrip,spike|gvm|gvm-nocache|rtl|rtl-nocache
-tensor_shared_to_global_test,tensor_shared_to_global_test.out,,verdict,directed|quick|s2g|tensor|funct4,funct4|s2g|tensor|descriptor|wait_all,spike|gvm|gvm-nocache|rtl|rtl-nocache
-mixed_async_fence_test,mixed_async_fence_test.out,,verdict,directed|quick|mixed|fence|bulk|tensor|prefetch|s2g|funct1|funct2|funct3|funct4|funct5|funct6,mixed|async|noise|bulk|tensor|descriptor|prefetch|bidirectional|stress|wait_all,spike|gvm|gvm-nocache|rtl|rtl-nocache
-multi_warp_dma_fence_test,multi_warp_dma_fence_test.out,,verdict,directed|quick|fence|funct6,funct6|wait_all|multi-warp|bulk,spike|gvm|gvm-nocache|rtl|rtl-nocache
-dma_shared_routing_conflict_test,dma_shared_routing_conflict_test.out,,verdict,directed|quick|routing|funct1|funct6,funct1|funct6|routing|shared|bank-conflict|wait_all,spike|gvm|gvm-nocache|rtl|rtl-nocache
+dir,exe,run_cmd,check_mode,suites,tags,backends,label,kind,direction,scope,weight,shardable
+dma_tma_g2s_func_test,dma_tma_g2s_func_test.out,,verdict,directed|full|func|g2s|single-wg,bulk|tensor|descriptor|prefetch|matrix|datatype|subbox|stride|swizzle|oob|routing|multi-warp|fence|stress|g2s|single-wg,spike|gvm|gvm-nocache|rtl|rtl-nocache,,func,g2s,single-wg,medium,0
+dma_tma_s2g_func_test,dma_tma_s2g_func_test.out,,verdict,directed|full|func|s2g|single-wg,bulk|tensor|descriptor|roundtrip|s2g|single-wg,spike|gvm|gvm-nocache|rtl|rtl-nocache,,func,s2g,single-wg,short,0
+dma_tma_multi_wg_func_test,dma_tma_multi_wg_func_test.out,,verdict,directed|full|func|multi-wg,bulk|tensor|g2s|s2g|multi-wg|funct1|funct2|funct3|funct4|funct6,spike|gvm|gvm-nocache|rtl|rtl-nocache,,func,mixed,multi-wg,medium,0
+tma_roundtrip_pipeline_perf_test,tma_roundtrip_pipeline_perf_test.out,./tma_roundtrip_pipeline_perf_test.out single 2 4,verdict,perf|perf-quick,perf|pipeline|roundtrip|quick,spike|gvm|gvm-nocache|rtl|rtl-nocache,tma_roundtrip_pipeline_perf_quick,perf,mixed,single-wg,short,0
+tma_roundtrip_pipeline_perf_test,tma_roundtrip_pipeline_perf_test.out,./tma_roundtrip_pipeline_perf_test.out sweep,verdict,perf|perf-full,perf|pipeline|roundtrip|full|slow,spike|gvm|gvm-nocache|rtl|rtl-nocache,tma_roundtrip_pipeline_perf_full,perf,mixed,single-wg,long,0
+tma_pingpong_pipeline_perf_test,tma_pingpong_pipeline_perf_test.out,./tma_pingpong_pipeline_perf_test.out single 16 16 2 4,verdict,perf|perf-quick,perf|pipeline|pingpong|quick,spike|gvm|gvm-nocache|rtl|rtl-nocache,tma_pingpong_pipeline_perf_quick,perf,mixed,single-wg,short,0
+tma_pingpong_pipeline_perf_test,tma_pingpong_pipeline_perf_test.out,./tma_pingpong_pipeline_perf_test.out sweep,verdict,perf|perf-full,perf|pipeline|pingpong|full|slow,spike|gvm|gvm-nocache|rtl|rtl-nocache,tma_pingpong_pipeline_perf_full,perf,mixed,single-wg,long,0
+tma_gemm_perf_test,tma_gemm_perf_test.out,./tma_gemm_perf_test.out single 1 1 1 1,verdict,perf|perf-quick,perf|gemm|quick,spike|gvm|gvm-nocache|rtl|rtl-nocache,tma_gemm_perf_quick,perf,mixed,single-wg,short,0
+tma_gemm_perf_test,tma_gemm_perf_test.out,./tma_gemm_perf_test.out sweep 1,verdict,perf|perf-full,perf|gemm|full|slow,spike|gvm|gvm-nocache|rtl|rtl-nocache,tma_gemm_perf_full,perf,mixed,single-wg,long,0
+dma_tma_serial_pipeline_perf_test,dma_tma_serial_pipeline_perf_test.out,./dma_tma_serial_pipeline_perf_test.out single 16 16,verdict,perf|perf-quick,perf|serial|no-overlap|behavior|tma|quick,spike|gvm|gvm-nocache|rtl|rtl-nocache,dma_tma_serial_pipeline_perf_quick,perf,mixed,single-wg,short,0
+dma_tma_serial_pipeline_perf_test,dma_tma_serial_pipeline_perf_test.out,./dma_tma_serial_pipeline_perf_test.out sweep,verdict,perf|perf-full,perf|serial|no-overlap|behavior|tma|full|slow,spike|gvm|gvm-nocache|rtl|rtl-nocache,dma_tma_serial_pipeline_perf_full,perf,mixed,single-wg,long,0

@@ -1,0 +1,129 @@
+liyb@dsplab-ubuntu:~/ventus-env-copilot-test/testcases/_get_case/tma_pingpong_pipeline_perf_test$ VENTUS_BACKEND=gvm ./tma_pingpong_pi
+peline_perf_test.out  sweep 
+PINGPONG_CHILD_START path=manual pid=158008 rows=16 cols=16 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230338_158007_manual_r16_c16_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230338_158007_manual_r16_c16_b2_s1
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=158009 rows=16 cols=16 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230338_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230338_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s1
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=16 cols=16 buffers=2 stages=1 ns=6251569754 cycles=4472
+PINGPONG_CHILD_DONE path=manual rows=16 cols=16 buffers=2 stages=1 ns=6635545394 cycles=5008
+| 16 | 16 | 2 | 1 | 256 | 5008 | 4472 | 1.1199 | 10.70 | 6635545394 | 6251569754 | 1.0614 | 5.79 |
+PINGPONG_CHILD_START path=manual pid=158242 rows=16 cols=16 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230350_158007_manual_r16_c16_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230350_158007_manual_r16_c16_b2_s2
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=158243 rows=16 cols=16 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230350_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230350_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s2
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=16 cols=16 buffers=2 stages=2 ns=8356523721 cycles=7352
+PINGPONG_CHILD_DONE path=manual rows=16 cols=16 buffers=2 stages=2 ns=9263288119 cycles=8718
+| 16 | 16 | 2 | 2 | 512 | 8718 | 7352 | 1.1858 | 15.67 | 9263288119 | 8356523721 | 1.1085 | 9.79 |
+PINGPONG_CHILD_START path=manual pid=158707 rows=16 cols=16 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230405_158007_manual_r16_c16_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230405_158007_manual_r16_c16_b2_s4
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=158708 rows=16 cols=16 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230405_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230405_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s4
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=16 cols=16 buffers=2 stages=4 ns=11958500906 cycles=13116
+PINGPONG_CHILD_DONE path=manual rows=16 cols=16 buffers=2 stages=4 ns=14012814825 cycles=16162
+| 16 | 16 | 2 | 4 | 1024 | 16162 | 13116 | 1.2322 | 18.85 | 14012814825 | 11958500906 | 1.1718 | 14.66 |
+PINGPONG_CHILD_START path=manual pid=159134 rows=16 cols=16 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230424_158007_manual_r16_c16_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230424_158007_manual_r16_c16_b2_s8
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=159135 rows=16 cols=16 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230424_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230424_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s8
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=16 cols=16 buffers=2 stages=8 ns=19626817289 cycles=24744
+PINGPONG_CHILD_DONE path=manual rows=16 cols=16 buffers=2 stages=8 ns=23734789350 cycles=31148
+| 16 | 16 | 2 | 8 | 2048 | 31148 | 24744 | 1.2588 | 20.56 | 23734789350 | 19626817289 | 1.2093 | 17.31 |
+PINGPONG_CHILD_START path=manual pid=159379 rows=16 cols=16 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230453_158007_manual_r16_c16_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230453_158007_manual_r16_c16_b2_s16
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=159380 rows=16 cols=16 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230453_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230453_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s16
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=16 cols=16 buffers=2 stages=16 ns=34905900125 cycles=47924
+PINGPONG_CHILD_DONE path=manual rows=16 cols=16 buffers=2 stages=16 ns=44303228130 cycles=61176
+| 16 | 16 | 2 | 16 | 4096 | 61176 | 47924 | 1.2765 | 21.66 | 44303228130 | 34905900125 | 1.2692 | 21.21 |
+PINGPONG_CHILD_START path=manual pid=159692 rows=32 cols=16 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230543_158007_manual_r32_c16_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230543_158007_manual_r32_c16_b2_s1
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=159693 rows=32 cols=16 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230543_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230543_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s1
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=16 buffers=2 stages=1 ns=7978683711 cycles=6980
+PINGPONG_CHILD_DONE path=manual rows=32 cols=16 buffers=2 stages=1 ns=8667970211 cycles=8208
+| 32 | 16 | 2 | 1 | 512 | 8208 | 6980 | 1.1759 | 14.96 | 8667970211 | 7978683711 | 1.0864 | 7.95 |
+PINGPONG_CHILD_START path=manual pid=159894 rows=32 cols=16 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230557_158007_manual_r32_c16_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230557_158007_manual_r32_c16_b2_s2
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=159895 rows=32 cols=16 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230557_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230557_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s2
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=16 buffers=2 stages=2 ns=11181420460 cycles=11998
+PINGPONG_CHILD_DONE path=manual rows=32 cols=16 buffers=2 stages=2 ns=13367857795 cycles=15262
+| 32 | 16 | 2 | 2 | 1024 | 15262 | 11998 | 1.2720 | 21.39 | 13367857795 | 11181420460 | 1.1955 | 16.36 |
+PINGPONG_CHILD_START path=manual pid=160135 rows=32 cols=16 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230615_158007_manual_r32_c16_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230615_158007_manual_r32_c16_b2_s4
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=160136 rows=32 cols=16 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230615_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230615_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s4
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=16 buffers=2 stages=4 ns=17917816797 cycles=22096
+PINGPONG_CHILD_DONE path=manual rows=32 cols=16 buffers=2 stages=4 ns=22457038424 cycles=29300
+| 32 | 16 | 2 | 4 | 2048 | 29300 | 22096 | 1.3260 | 24.59 | 22457038424 | 17917816797 | 1.2533 | 20.21 |
+PINGPONG_CHILD_START path=manual pid=160388 rows=32 cols=16 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230643_158007_manual_r32_c16_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230643_158007_manual_r32_c16_b2_s8
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=160389 rows=32 cols=16 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230643_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230643_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s8
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=16 buffers=2 stages=8 ns=31360102195 cycles=42344
+PINGPONG_CHILD_DONE path=manual rows=32 cols=16 buffers=2 stages=8 ns=40997340559 cycles=57126
+| 32 | 16 | 2 | 8 | 4096 | 57126 | 42344 | 1.3491 | 25.88 | 40997340559 | 31360102195 | 1.3073 | 23.51 |
+PINGPONG_CHILD_START path=manual pid=160685 rows=32 cols=16 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230729_158007_manual_r32_c16_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230729_158007_manual_r32_c16_b2_s16
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=160686 rows=32 cols=16 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230729_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230729_158007_tma_pingpong_g2s_manual_store_r32_c16_b2_s16
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=16 buffers=2 stages=16 ns=57813786438 cycles=82730
+PINGPONG_CHILD_DONE path=manual rows=32 cols=16 buffers=2 stages=16 ns=78325863040 cycles=113514
+| 32 | 16 | 2 | 16 | 8192 | 113514 | 82730 | 1.3721 | 27.12 | 78325863040 | 57813786438 | 1.3548 | 26.19 |
+PINGPONG_CHILD_START path=manual pid=161231 rows=32 cols=32 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230853_158007_manual_r32_c32_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230853_158007_manual_r32_c32_b2_s1
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=161232 rows=32 cols=32 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230853_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230853_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s1
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=32 buffers=2 stages=1 ns=10643398999 cycles=11010
+PINGPONG_CHILD_DONE path=manual rows=32 cols=32 buffers=2 stages=1 ns=12942676513 cycles=14656
+| 32 | 32 | 2 | 1 | 1024 | 14656 | 11010 | 1.3312 | 24.88 | 12942676513 | 10643398999 | 1.2160 | 17.77 |
+PINGPONG_CHILD_START path=manual pid=161463 rows=32 cols=32 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230911_158007_manual_r32_c32_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230911_158007_manual_r32_c32_b2_s2
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=161464 rows=32 cols=32 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230911_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230911_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s2
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=32 buffers=2 stages=2 ns=16761612310 cycles=20308
+PINGPONG_CHILD_DONE path=manual rows=32 cols=32 buffers=2 stages=2 ns=22050405700 cycles=28386
+| 32 | 32 | 2 | 2 | 2048 | 28386 | 20308 | 1.3978 | 28.46 | 22050405700 | 16761612310 | 1.3155 | 23.99 |
+PINGPONG_CHILD_START path=manual pid=161709 rows=32 cols=32 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230939_158007_manual_r32_c32_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230939_158007_manual_r32_c32_b2_s4
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=161710 rows=32 cols=32 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230939_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230939_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s4
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=32 buffers=2 stages=4 ns=28936157304 cycles=38912
+PINGPONG_CHILD_DONE path=manual rows=32 cols=32 buffers=2 stages=4 ns=40026925411 cycles=55642
+| 32 | 32 | 2 | 4 | 4096 | 55642 | 38912 | 1.4299 | 30.07 | 40026925411 | 28936157304 | 1.3833 | 27.71 |
+PINGPONG_CHILD_START path=manual pid=162038 rows=32 cols=32 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231024_158007_manual_r32_c32_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231024_158007_manual_r32_c32_b2_s8
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=162039 rows=32 cols=32 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231024_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231024_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s8
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=32 buffers=2 stages=8 ns=53543595164 cycles=76192
+PINGPONG_CHILD_DONE path=manual rows=32 cols=32 buffers=2 stages=8 ns=76084682656 cycles=108544
+| 32 | 32 | 2 | 8 | 8192 | 108544 | 76192 | 1.4246 | 29.81 | 76084682656 | 53543595164 | 1.4210 | 29.63 |
+PINGPONG_CHILD_START path=manual pid=162465 rows=32 cols=32 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231145_158007_manual_r32_c32_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231145_158007_manual_r32_c32_b2_s16
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=162466 rows=32 cols=32 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231145_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231145_158007_tma_pingpong_g2s_manual_store_r32_c32_b2_s16
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=32 cols=32 buffers=2 stages=16 ns=103266064488 cycles=150622
+PINGPONG_CHILD_DONE path=manual rows=32 cols=32 buffers=2 stages=16 ns=147631137983 cycles=218564
+| 32 | 32 | 2 | 16 | 16384 | 218564 | 150622 | 1.4511 | 31.09 | 147631137983 | 103266064488 | 1.4296 | 30.05 |
+PINGPONG_CHILD_START path=manual pid=163151 rows=64 cols=32 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231418_158007_manual_r64_c32_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231418_158007_manual_r64_c32_b2_s1
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=163152 rows=64 cols=32 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231418_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231418_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s1
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=32 buffers=2 stages=1 ns=16333584222 cycles=19858
+PINGPONG_CHILD_DONE path=manual rows=64 cols=32 buffers=2 stages=1 ns=21436405067 cycles=27520
+| 64 | 32 | 2 | 1 | 2048 | 27520 | 19858 | 1.3858 | 27.84 | 21436405067 | 16333584222 | 1.3124 | 23.80 |
+PINGPONG_CHILD_START path=manual pid=163409 rows=64 cols=32 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231445_158007_manual_r64_c32_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231445_158007_manual_r64_c32_b2_s2
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=163410 rows=64 cols=32 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231445_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231445_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s2
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=32 buffers=2 stages=2 ns=28286140234 cycles=37636
+PINGPONG_CHILD_DONE path=manual rows=64 cols=32 buffers=2 stages=2 ns=39202764386 cycles=54418
+| 64 | 32 | 2 | 2 | 4096 | 54418 | 37636 | 1.4459 | 30.84 | 39202764386 | 28286140234 | 1.3859 | 27.85 |
+PINGPONG_CHILD_START path=manual pid=163729 rows=64 cols=32 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231530_158007_manual_r64_c32_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231530_158007_manual_r64_c32_b2_s4
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=163730 rows=64 cols=32 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231530_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231530_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s4
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=32 buffers=2 stages=4 ns=51660514268 cycles=73280
+PINGPONG_CHILD_DONE path=manual rows=64 cols=32 buffers=2 stages=4 ns=74420044701 cycles=107802
+| 64 | 32 | 2 | 4 | 8192 | 107802 | 73280 | 1.4711 | 32.02 | 74420044701 | 51660514268 | 1.4406 | 30.58 |
+PINGPONG_CHILD_START path=manual pid=164156 rows=64 cols=32 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231649_158007_manual_r64_c32_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231649_158007_manual_r64_c32_b2_s8
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=164157 rows=64 cols=32 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231649_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231649_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s8
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=32 buffers=2 stages=8 ns=98229211833 cycles=144592
+PINGPONG_CHILD_DONE path=manual rows=64 cols=32 buffers=2 stages=8 ns=142266717858 cycles=211538
+| 64 | 32 | 2 | 8 | 16384 | 211538 | 144592 | 1.4630 | 31.65 | 142266717858 | 98229211833 | 1.4483 | 30.95 |
+PINGPONG_CHILD_START path=manual pid=164800 rows=64 cols=32 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231917_158007_manual_r64_c32_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231917_158007_manual_r64_c32_b2_s16
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=164801 rows=64 cols=32 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_231917_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_231917_158007_tma_pingpong_g2s_manual_store_r64_c32_b2_s16
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=32 buffers=2 stages=16 ns=192173973753 cycles=287134
+PINGPONG_CHILD_DONE path=manual rows=64 cols=32 buffers=2 stages=16 ns=285652799032 cycles=427380
+| 64 | 32 | 2 | 16 | 32768 | 427380 | 287134 | 1.4884 | 32.82 | 285652799032 | 192173973753 | 1.4864 | 32.72 |
+PINGPONG_CHILD_START path=manual pid=166035 rows=64 cols=64 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232408_158007_manual_r64_c64_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232408_158007_manual_r64_c64_b2_s1
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=166036 rows=64 cols=64 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232408_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232408_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s1
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=64 buffers=2 stages=1 ns=29445964618 cycles=39494
+PINGPONG_CHILD_DONE path=manual rows=64 cols=64 buffers=2 stages=1 ns=40476445580 cycles=56556
+| 64 | 64 | 2 | 1 | 4096 | 56556 | 39494 | 1.4320 | 30.17 | 40476445580 | 29445964618 | 1.3746 | 27.25 |
+PINGPONG_CHILD_START path=manual pid=166366 rows=64 cols=64 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232454_158007_manual_r64_c64_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232454_158007_manual_r64_c64_b2_s2
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=166367 rows=64 cols=64 buffers=2 stages=2 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232454_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s2.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232454_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s2
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=64 buffers=2 stages=2 ns=53448345893 cycles=75918
+PINGPONG_CHILD_DONE path=manual rows=64 cols=64 buffers=2 stages=2 ns=77460578603 cycles=111892
+| 64 | 64 | 2 | 2 | 8192 | 111892 | 75918 | 1.4739 | 32.15 | 77460578603 | 53448345893 | 1.4493 | 31.00 |
+PINGPONG_CHILD_START path=manual pid=167477 rows=64 cols=64 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232617_158007_manual_r64_c64_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232617_158007_manual_r64_c64_b2_s4
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=167478 rows=64 cols=64 buffers=2 stages=4 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232617_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s4.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232617_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s4
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=64 buffers=2 stages=4 ns=102707799455 cycles=150674
+PINGPONG_CHILD_DONE path=manual rows=64 cols=64 buffers=2 stages=4 ns=150703485573 cycles=223340
+| 64 | 64 | 2 | 4 | 16384 | 223340 | 150674 | 1.4823 | 32.54 | 150703485573 | 102707799455 | 1.4673 | 31.85 |
+PINGPONG_CHILD_START path=manual pid=169353 rows=64 cols=64 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232853_158007_manual_r64_c64_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232853_158007_manual_r64_c64_b2_s8
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=169354 rows=64 cols=64 buffers=2 stages=8 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_232853_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s8.log run_dir=tma_pingpong_pipeline_perf_run_20260529_232853_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s8
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=64 buffers=2 stages=8 ns=200669583533 cycles=297260
+PINGPONG_CHILD_DONE path=manual rows=64 cols=64 buffers=2 stages=8 ns=298054206864 cycles=444662
+| 64 | 64 | 2 | 8 | 32768 | 444662 | 297260 | 1.4959 | 33.15 | 298054206864 | 200669583533 | 1.4853 | 32.67 |
+PINGPONG_CHILD_START path=manual pid=172238 rows=64 cols=64 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_233357_158007_manual_r64_c64_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_233357_158007_manual_r64_c64_b2_s16
+PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=172239 rows=64 cols=64 buffers=2 stages=16 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_233357_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s16.log run_dir=tma_pingpong_pipeline_perf_run_20260529_233357_158007_tma_pingpong_g2s_manual_store_r64_c64_b2_s16
+PINGPONG_CHILD_DONE path=tma_pingpong_g2s_manual_store rows=64 cols=64 buffers=2 stages=16 ns=396990893716 cycles=593340
+PINGPONG_CHILD_DONE path=manual rows=64 cols=64 buffers=2 stages=16 ns=588904279685 cycles=888852
+| 64 | 64 | 2 | 16 | 65536 | 888852 | 593340 | 1.4980 | 33.25 | 588904279685 | 396990893716 | 1.4834 | 32.59 |
+REPORT tma_pingpong_pipeline_perf_report_20260529_234356.md
+liyb@dsplab-ubuntu:~/ventus-env-copilot-test/testcases/_get_case
