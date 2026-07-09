@@ -19,7 +19,7 @@
 #include "../common/ventus_opencl_test.h"
 
 #define LOCAL_SIZE 32
-#define SHARED_BUF_BYTES 512
+#define SHARED_BUF_BYTES 1024
 #define DST_GUARD 64
 #define MODE_S2G 0
 #define MODE_ROUNDTRIP 1
@@ -38,6 +38,25 @@ static const s2g_case_t g_cases[] = {
   {"partial_tail_96B",         MODE_S2G,      64,  96,   0},
   {"dst_offset_cross_line",    MODE_S2G,       0,  64, 112},
   {"src_shared_offset_128B",   MODE_S2G,      48, 128,  32},
+  {"cross_source_line_same_dst_line", MODE_S2G, 120, 32, 0},
+  {"cross_source_and_dst_line", MODE_S2G, 112, 96, 96},
+  {"dst_cross_page",           MODE_S2G,       0, 192, 4000},
+  {"fixed_mask_dst4_20B",       MODE_S2G,      32,  20,   4},
+  {"fixed_mask_dst28_100B",     MODE_S2G,      64, 100,  28},
+  {"fixed_mask_src124_dst4_64B", MODE_S2G,    124,  64,   4},
+  {"fixed_mask_dst124_132B",    MODE_S2G,     256, 132, 124},
+  {"mask_seed00_dst0_4B",       MODE_S2G,       0,   4,   0},
+  {"mask_seed01_dst124_16B",    MODE_S2G,      12,  16, 124},
+  {"mask_seed02_src96_dst60_32B", MODE_S2G,    96,  32,  60},
+  {"mask_seed03_src188_dst4_68B", MODE_S2G,   188,  68,   4},
+  {"mask_seed04_src320_dst64_128B", MODE_S2G, 320, 128,  64},
+  {"mask_seed05_src448_dst96_160B", MODE_S2G, 448, 160,  96},
+  {"mask_seed06_src120_dst28_224B", MODE_S2G, 120, 224,  28},
+  {"mask_seed07_src512_dst252_256B", MODE_S2G, 512, 256, 252},
+  {"fuzz_seed08_src4_dst60_12B", MODE_S2G, 4, 12, 60},
+  {"fuzz_seed09_src252_dst120_20B", MODE_S2G, 252, 20, 120},
+  {"fuzz_seed10_src508_dst4092_36B", MODE_S2G, 508, 36, 4092},
+  {"fuzz_seed11_src764_dst188_84B", MODE_S2G, 764, 84, 188},
   {"g2s_wait_s2g_roundtrip",   MODE_ROUNDTRIP, 0, 128,   0},
 };
 

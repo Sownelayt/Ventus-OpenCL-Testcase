@@ -6,7 +6,7 @@ EXE = dma_tma_multi_wg_func_test.out
 SRC = dma_tma_multi_wg_func_test.c
 CASE_SRCS = multi_wg_bulk_g2s_case.c
 CASE_OBJS = $(CASE_SRCS:.c=.o)
-KERNELS = multi_wg_dma_test.cl multi_wg_dma_s2g_test.cl multi_wg_tma_g2s_test.cl multi_wg_tma_s2g_test.cl
+KERNELS = multi_wg_dma_test.cl multi_wg_dma_s2g_test.cl multi_wg_tma_g2s_test.cl multi_wg_tma_s2g_test.cl multi_wg_tma_s2g_subbox_test.cl multi_wg_tma_s2g_stride_oob_test.cl multi_wg_tma_s2g_descriptor_mix_test.cl multi_wg_tma_s2g_group_page_test.cl
 
 .PHONY: all clean log
 all: log $(EXE)

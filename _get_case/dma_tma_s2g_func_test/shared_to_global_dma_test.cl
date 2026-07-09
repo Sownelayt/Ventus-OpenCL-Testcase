@@ -7,7 +7,35 @@
  *   rs2 = size_bytes
  */
 
-#define SHARED_BUF_BYTES 512
+#define SHARED_BUF_BYTES 1024
+
+#define S2G_COMMIT_GROUP() do {                                             \
+  __asm__ volatile(".word 0x00086042\n\t" ::: "memory");                  \
+} while (0)
+
+#define S2G_WAIT_GROUP0() do {                                               \
+  __asm__ volatile(".word 0x000c6042\n\t" ::: "memory");                  \
+} while (0)
+
+#define S2G_WAIT_GROUP1() do {                                               \
+  __asm__ volatile(".word 0x000ce042\n\t" ::: "memory");                  \
+} while (0)
+
+#define S2G_WAIT_GROUP2() do {                                               \
+  __asm__ volatile(".word 0x000d6042\n\t" ::: "memory");                  \
+} while (0)
+
+#define S2G_WAIT_GROUP3() do {                                               \
+  __asm__ volatile(".word 0x000de042\n\t" ::: "memory");                  \
+} while (0)
+
+#define S2G_ISSUE(dst_addr, src_addr, size_bytes) do {                       \
+  __asm__ volatile(                                                           \
+    ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"                     \
+    :                                                                         \
+    : [dst] "r"(dst_addr), [src] "r"(src_addr), [size] "r"(size_bytes)   \
+    : "memory");                                                            \
+} while (0)
 
 static uint
 s2g_pattern_word(uint word_index)
@@ -126,6 +154,402 @@ shared_to_global_dual_small_kernel(__global uchar *dst,
       ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
       :
       : [dst] "r"(dst_b), [src] "r"(src_b), [size] "r"(copy_b)
+      : "memory");
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
+  }
+}
+
+kernel void
+shared_to_global_four_issue_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  int lid = get_local_id(0);
+  int lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint src0 = src_base;
+    uint src1 = src_base + 128u;
+    uint src2 = src_base + 256u;
+    uint src3 = src_base + 384u;
+    uint dst0 = dst_base;
+    uint dst1 = dst_base + 128u;
+    uint dst2 = dst_base + 256u;
+    uint dst3 = dst_base + 384u;
+    uint size = 128u;
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst0), [src] "r"(src0), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst1), [src] "r"(src1), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst2), [src] "r"(src2), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst3), [src] "r"(src3), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
+  }
+}
+
+kernel void
+shared_to_global_six_issue_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  int lid = get_local_id(0);
+  int lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 0u, src_base + 0u, size);
+    S2G_ISSUE(dst_base + 128u, src_base + 128u, size);
+    S2G_ISSUE(dst_base + 256u, src_base + 256u, size);
+    S2G_ISSUE(dst_base + 384u, src_base + 384u, size);
+    S2G_ISSUE(dst_base + 512u, src_base + 512u, size);
+    S2G_ISSUE(dst_base + 640u, src_base + 640u, size);
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
+  }
+}
+
+kernel void
+shared_to_global_eight_issue_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  int lid = get_local_id(0);
+  int lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 0u, src_base + 0u, size);
+    S2G_ISSUE(dst_base + 128u, src_base + 128u, size);
+    S2G_ISSUE(dst_base + 256u, src_base + 256u, size);
+    S2G_ISSUE(dst_base + 384u, src_base + 384u, size);
+    S2G_ISSUE(dst_base + 512u, src_base + 512u, size);
+    S2G_ISSUE(dst_base + 640u, src_base + 640u, size);
+    S2G_ISSUE(dst_base + 768u, src_base + 768u, size);
+    S2G_ISSUE(dst_base + 896u, src_base + 896u, size);
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
+  }
+}
+
+kernel void
+shared_to_global_empty_commit_kernel(__global uchar *dst)
+{
+  int lid = get_local_id(0);
+  if (lid == 0) {
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP0();
+  }
+}
+
+kernel void
+shared_to_global_wait_oldest_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  int lid = get_local_id(0);
+  int lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint src0 = src_base;
+    uint src1 = src_base + 128u;
+    uint dst0 = dst_base;
+    uint dst1 = dst_base + 128u;
+    uint size = 128u;
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst0), [src] "r"(src0), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst1), [src] "r"(src1), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(".word 0x0000e042\n\t" ::: "memory");
+  }
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+  for (uint i = lid; i < 32u; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i + 64u);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src2 = (uint)((__local uchar *)shared_words);
+    uint dst2 = (uint)dst + 256u;
+    uint size = 128u;
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst2), [src] "r"(src2), [size] "r"(size)
+      : "memory");
+    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
+  }
+}
+
+kernel void
+shared_to_global_wait_group_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  int lid = get_local_id(0);
+  int lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst_base), [src] "r"(src_base), [size] "r"(size)
+      : "memory");
+    S2G_COMMIT_GROUP();
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst_base + 128u), [src] "r"(src_base + 128u),
+        [size] "r"(size)
+      : "memory");
+    S2G_COMMIT_GROUP();
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst_base + 256u), [src] "r"(src_base + 256u),
+        [size] "r"(size)
+      : "memory");
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP2();
+  }
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+  for (uint i = lid; i < 32u; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i + 96u);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src3 = (uint)((__local uchar *)shared_words);
+    uint dst3 = (uint)dst + 384u;
+    uint size = 128u;
+    __asm__ volatile(
+      ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"
+      :
+      : [dst] "r"(dst3), [src] "r"(src3), [size] "r"(size)
+      : "memory");
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP0();
+  }
+}
+
+kernel void
+shared_to_global_group_wrap_wait0123_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  uint lid = get_local_id(0);
+  uint lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 0u, src_base + 0u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 128u, src_base + 128u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 256u, src_base + 256u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 384u, src_base + 384u, size);
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP3();
+  }
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+  for (uint i = lid; i < 32u; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i + 128u);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 512u, src_base + 0u, size);
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP2();
+  }
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+  for (uint i = lid; i < 32u; i += lsize) {
+    shared_words[32u + i] = s2g_pattern_word(i + 160u);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 640u, src_base + 128u, size);
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP1();
+  }
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+
+  for (uint i = lid; i < 32u; i += lsize) {
+    shared_words[64u + i] = s2g_pattern_word(i + 192u);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 768u, src_base + 256u, size);
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP0();
+  }
+}
+
+kernel void
+shared_to_global_group_multi_issue_wrap_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  uint lid = get_local_id(0);
+  uint lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+
+    S2G_ISSUE(dst_base + 0u, src_base + 0u, size);
+    S2G_ISSUE(dst_base + 128u, src_base + 128u, size);
+    S2G_ISSUE(dst_base + 256u, src_base + 256u, size);
+    S2G_COMMIT_GROUP();
+
+    S2G_ISSUE(dst_base + 384u, src_base + 384u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 512u, src_base + 512u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 640u, src_base + 640u, size);
+    S2G_COMMIT_GROUP();
+
+    S2G_WAIT_GROUP3();
+
+    S2G_ISSUE(dst_base + 768u, src_base + 768u, size);
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP0();
+  }
+}
+
+kernel void
+shared_to_global_cross_page_tlb_abc_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  uint lid = get_local_id(0);
+  uint lsize = get_local_size(0);
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lid == 0) {
+    uint src_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint size = 128u;
+    S2G_ISSUE(dst_base + 0u, src_base + 0u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 4096u, src_base + 128u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 8192u, src_base + 256u, size);
+    S2G_COMMIT_GROUP();
+    S2G_ISSUE(dst_base + 0u, src_base + 384u, size);
+    S2G_COMMIT_GROUP();
+    S2G_WAIT_GROUP0();
+  }
+}
+
+kernel void
+shared_to_global_multi_warp_kernel(__global uchar *dst)
+{
+  __local uint shared_words[SHARED_BUF_BYTES / 4];
+  uint lid = get_local_id(0);
+  uint lsize = get_local_size(0);
+  uint lane = lid & 31u;
+
+  for (uint i = lid; i < SHARED_BUF_BYTES / 4; i += lsize) {
+    shared_words[i] = s2g_pattern_word(i);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  if (lane == 0u) {
+    uint shared_base = (uint)((__local uchar *)shared_words);
+    uint dst_base = (uint)dst;
+    uint src;
+    uint out;
+    uint warp;
+    uint size = 128u;
+    __asm__ volatile(
+      "csrr %[warp], 0x805\n\t"
+      "slli %[src], %[warp], 7\n\t"
+      "add  %[src], %[src], %[shared]\n\t"
+      "slli %[out], %[warp], 7\n\t"
+      "add  %[out], %[out], %[dst]\n\t"
+      ".insn r 0x42, 3, 0, %[out], %[src], %[size]\n\t"
+      : [src] "=&r"(src), [out] "=&r"(out), [warp] "=&r"(warp)
+      : [shared] "r"(shared_base), [dst] "r"(dst_base),
+        [size] "r"(size)
       : "memory");
     __asm__ volatile(".word 0x00006042\n\t" ::: "memory");
   }

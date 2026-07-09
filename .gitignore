@@ -19,3 +19,4 @@ _get_case/*/log/
 _get_case/MNIST/*.out
 _get_case/MNIST_conv_small/*.out
 _get_case/__pycache__
+*.o

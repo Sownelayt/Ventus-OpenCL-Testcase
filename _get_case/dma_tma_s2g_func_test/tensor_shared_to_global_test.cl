@@ -2,12 +2,12 @@
 /*
  * Tensor shared-to-global smoke kernel.
  *
- * The kernel fills a 4x4 FP32 tensor in shared memory, then issues
+ * The kernel fills a small FP32 tensor in shared memory, then issues
  * descriptor-form CP_ASYNC_TENSOR_S2G (funct3=4) to copy that tensor into a
  * global destination selected by the descriptor and the runtime coords.
  */
 
-#define SHARED_ELEMS 16
+#define SHARED_ELEMS 256
 #define SHARED_BYTES  (SHARED_ELEMS * 4)
 
 static uint

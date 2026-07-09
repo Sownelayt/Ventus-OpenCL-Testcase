@@ -11,15 +11,15 @@
 #   1. source env.sh so OpenCL apps use the repo-local Ventus install.
 #   2. select cases from cases_dma_tma.csv by suite, tag, or explicit case.
 #   3. build selected cases unless --no-build is used.
-#   4. run each case from its own directory and save full logs under the
-#      case's own log/ directory. The top-level log_dir keeps runner summaries.
+#   4. run each case from its own directory with isolated POCL/temp cache, and
+#      save full logs under the case's own log/ directory. The top-level log_dir
+#      keeps runner summaries.
 #      For the full GVM suite, tma_matrix_test can run in parallel with the
 #      remaining selected cases because it usually takes about as long as the
 #      rest of the suite combined.
 #
 # Usage examples:
 #   ./run_dma_tma_rtl.sh --list
-#   ./run_dma_tma_rtl.sh --suite quick
 #   ./run_dma_tma_rtl.sh --suite prefetch --backend gvm
 #   VENTUS_BACKEND=spike ./run_dma_tma_rtl.sh --suite directed /tmp/spike-log
 #   ./run_dma_tma_rtl.sh --case tma_matrix_test --run-arg FP32_2D_4x4_full
@@ -35,6 +35,14 @@ if ! source "$SCRIPT_DIR/../../env.sh"; then
   echo "[ERROR] failed to source env.sh" >&2
   exit 1
 fi
+
+for tmp_var in TMPDIR TMP TEMP; do
+  tmp_path=${!tmp_var:-}
+  if [[ -n "$tmp_path" ]] && ! mkdir -p "$tmp_path"; then
+    echo "[ERROR] failed to create $tmp_var directory: $tmp_path" >&2
+    exit 1
+  fi
+done
 
 CSV="$SCRIPT_DIR/cases_dma_tma.csv"
 BACKEND=${VENTUS_BACKEND:-gvm}
@@ -66,7 +74,7 @@ Options:
   --run-arg ARG           Append ARG to the testcase command. Useful for one tma_matrix case.
   --log-dir DIR           Directory for runner summaries. Per-case logs go under each case's log/.
   --jobs N                Pass -jN to make.
-  --run-jobs N            Run up to N testcase directories in parallel, max 3.
+  --run-jobs N            Run up to N testcase directories in parallel, max 4.
   --timeout SEC           Per-case timeout. 0 means no timeout.
   --parallel-split        Run tma_matrix_test and remaining cases in two lanes.
   --no-parallel-split     Disable automatic GVM two-lane scheduling.
@@ -77,21 +85,19 @@ Options:
 
 Common suites:
   directed   Full validated DMA/TMA directed suite.
-  quick      Skip the slow tma_matrix_test; good for most edit/check loops.
   merged     New non-destructive merged DMA/TMA project suite.
   full       Functional full suite: merged projects plus tma_matrix_test.
-  perf-quick Representative points from the retained performance projects.
-  perf-full  Full sweeps from the retained performance projects.
-  smoke      tensor_dma_test + tma_descriptor_test.
+  perf       Retained performance projects.
+  perf-full  Full sweeps from retained pingpong/profile projects.
+  profile    Diagnostic profile projects such as DMA/TMA movement microbench.
   prefetch   PREFETCH_TENSORMAP coverage in tma_descriptor_test.
   fence      CP_ASYNC_FENCE coverage in descriptor/bulk fence tests.
   matrix     tma_matrix_test only.
   bulk       bulk DMA matrix only.
   routing    shared-response routing conflict tests only.
-  legacy     older smoke cases registered outside the default directed suite.
+  legacy     older one-off cases registered outside the default directed suite.
 
 Examples:
-  ./run_dma_tma_rtl.sh --suite quick
   ./run_dma_tma_rtl.sh --suite prefetch --backend gvm
   VENTUS_BACKEND=spike ./run_dma_tma_rtl.sh --suite directed /tmp/spike-log
   ./run_dma_tma_rtl.sh --case tma_matrix_test --run-arg FP32_2D_4x4_full
@@ -263,8 +269,8 @@ if [[ "$RUN_JOBS" -eq 0 ]]; then
     *) RUN_JOBS=1 ;;
   esac
 fi
-if [[ "$RUN_JOBS" -lt 1 || "$RUN_JOBS" -gt 3 ]]; then
-  echo "[ERROR] --run-jobs must be between 1 and 3" >&2
+if [[ "$RUN_JOBS" -lt 1 || "$RUN_JOBS" -gt 4 ]]; then
+  echo "[ERROR] --run-jobs must be between 1 and 4" >&2
   exit 2
 fi
 
@@ -383,6 +389,8 @@ run_case_row() {
   local case_log_dir="$case_dir/log"
   mkdir -p "$case_log_dir"
   local run_log="$case_log_dir/${run_name}.${BACKEND}.${RUN_STAMP}.run.log"
+  local pocl_cache_dir="$case_log_dir/pocl-cache/${run_name}.${BACKEND}.${RUN_STAMP}"
+  local temp_dir="$case_log_dir/tmp/${run_name}.${BACKEND}.${RUN_STAMP}"
   local cmd start end elapsed rc work_dir
 
   [[ -n "$run_cmd" ]] || run_cmd="./$exe"
@@ -400,11 +408,17 @@ run_case_row() {
     done
   fi
 
+  mkdir -p "$pocl_cache_dir" "$temp_dir"
+
   echo "[RUN] $run_name :: $cmd"
   start=$(date +%s)
   (
     cd "$work_dir" || exit 1
     export VENTUS_BACKEND="$BACKEND"
+    export POCL_CACHE_DIR="$pocl_cache_dir"
+    export TMPDIR="$temp_dir"
+    export TMP="$temp_dir"
+    export TEMP="$temp_dir"
     case "$BACKEND:$dir" in
       gvm:dma_tma_g2s_func_test|gvm-nocache:dma_tma_g2s_func_test|rtl:dma_tma_g2s_func_test|rtl-nocache:dma_tma_g2s_func_test|gvm:tma_matrix_test|gvm-nocache:tma_matrix_test|rtl:tma_matrix_test|rtl-nocache:tma_matrix_test)
         export VENTUS_TMA_RUN_RTL_ONLY=${VENTUS_TMA_RUN_RTL_ONLY:-1}

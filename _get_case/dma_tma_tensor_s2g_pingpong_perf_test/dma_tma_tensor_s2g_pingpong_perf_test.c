@@ -1,12 +1,16 @@
 /*
- * TMA ping-pong pipeline performance test.
+ * DMA/TMA S2G ping-pong pipeline performance test.
  *
  * Background:
- *   Measure a ping-pong double-buffer tile path that includes input movement, shared-memory
- *   compute, and output movement. The manual path performs
- *   global -> register -> shared, compute, and shared -> register -> global.
- *   The TMA path uses descriptor CP_ASYNC_TENSOR G2S for the input side,
- *   then uses the same ordinary shared/register/global store as the manual path.
+ *   Measure ping-pong tile paths that share the same compute and differ only in
+ *   the DMA coverage:
+ *     baseline:   manual global -> shared, compute, manual shared -> global
+ *     manual_s2g: manual global -> shared, compute, CP_ASYNC_BULK_S2G writeback
+ *     tma_s2g:    descriptor TMA G2S input, compute, CP_ASYNC_BULK_S2G writeback
+ *     manual_tensor_s2g:
+ *                 manual global -> shared, compute, CP_ASYNC_TENSOR_S2G writeback
+ *     tma_tensor_s2g:
+ *                 descriptor TMA G2S input, compute, CP_ASYNC_TENSOR_S2G writeback
  *
  * Implementation:
  *   The test fixes shared-memory buffers at two and scans the number of tiles
@@ -16,11 +20,11 @@
  *   parsed from those logs when available.
  *
  * Usage:
- *   ./tma_pingpong_pipeline_perf_test.out
- *   ./tma_pingpong_pipeline_perf_test.out sweep
- *   ./tma_pingpong_pipeline_perf_test.out single <buffers> <stages>
- *   ./tma_pingpong_pipeline_perf_test.out single <rows> <cols> <buffers> <stages>
- *   ./tma_pingpong_pipeline_perf_test.out child manual|tma <rows> <cols> <buffers> <stages>
+ *   ./dma_tma_tensor_s2g_pingpong_perf_test.out
+ *   ./dma_tma_tensor_s2g_pingpong_perf_test.out sweep manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g
+ *   ./dma_tma_tensor_s2g_pingpong_perf_test.out single manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g <buffers> <stages>
+ *   ./dma_tma_tensor_s2g_pingpong_perf_test.out single manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g <rows> <cols> <buffers> <stages>
+ *   ./dma_tma_tensor_s2g_pingpong_perf_test.out child manual|manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g <rows> <cols> <buffers> <stages>
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -55,9 +59,19 @@
 
 typedef enum {
   PATH_MANUAL = 0,
-  PATH_TMA = 1,
-  PATH_COUNT = 2
+  PATH_MANUAL_S2G = 1,
+  PATH_TMA_S2G = 2,
+  PATH_MANUAL_TENSOR_S2G = 3,
+  PATH_TMA_TENSOR_S2G = 4,
+  PATH_COUNT = 5
 } PathKind;
+
+typedef enum {
+  MODE_MANUAL_S2G = 0,
+  MODE_TMA_S2G = 1,
+  MODE_MANUAL_TENSOR_S2G = 2,
+  MODE_TMA_TENSOR_S2G = 3
+} CompareMode;
 
 typedef struct {
   uint32_t rows;
@@ -83,9 +97,10 @@ typedef struct {
 } PathResult;
 
 typedef struct {
+  CompareMode mode;
   PipelineCase c;
   PathResult manual;
-  PathResult tma;
+  PathResult opt;
 } CaseResult;
 
 typedef struct {
@@ -110,12 +125,26 @@ static const char *sweep_tile_text = "16x16, 32x16, 32x32, 64x32, 64x64";
 
 static const char *path_name(PathKind kind)
 {
-  return kind == PATH_TMA ? "tma_pingpong_g2s_manual_store" : "manual";
+  switch (kind) {
+  case PATH_MANUAL: return "manual";
+  case PATH_MANUAL_S2G: return "manual_in_s2g_store";
+  case PATH_TMA_S2G: return "tma_g2s_s2g_store";
+  case PATH_MANUAL_TENSOR_S2G: return "manual_in_tensor_s2g_store";
+  case PATH_TMA_TENSOR_S2G: return "tma_g2s_tensor_s2g_store";
+  default: return "unknown";
+  }
 }
 
 static const char *path_arg(PathKind kind)
 {
-  return kind == PATH_TMA ? "tma" : "manual";
+  switch (kind) {
+  case PATH_MANUAL: return "manual";
+  case PATH_MANUAL_S2G: return "manual_s2g";
+  case PATH_TMA_S2G: return "tma_s2g";
+  case PATH_MANUAL_TENSOR_S2G: return "manual_tensor_s2g";
+  case PATH_TMA_TENSOR_S2G: return "tma_tensor_s2g";
+  default: return "unknown";
+  }
 }
 
 static int parse_path_kind(const char *text, PathKind *kind)
@@ -124,13 +153,75 @@ static int parse_path_kind(const char *text, PathKind *kind)
     *kind = PATH_MANUAL;
     return 0;
   }
-  if (strcmp(text, "tma") == 0 || strcmp(text, "tma_pingpong") == 0 ||
-      strcmp(text, "tma_g2s") == 0 ||
-      strcmp(text, "tma_pingpong_g2s_manual_store") == 0) {
-    *kind = PATH_TMA;
+  if (strcmp(text, "manual_s2g") == 0 ||
+      strcmp(text, "manual_in_s2g_store") == 0) {
+    *kind = PATH_MANUAL_S2G;
     return 0;
   }
-  fprintf(stderr, "unknown path '%s', expected manual or tma\n", text);
+  if (strcmp(text, "tma_s2g") == 0 ||
+      strcmp(text, "tma_g2s_s2g_store") == 0) {
+    *kind = PATH_TMA_S2G;
+    return 0;
+  }
+  if (strcmp(text, "manual_tensor_s2g") == 0 ||
+      strcmp(text, "manual_in_tensor_s2g_store") == 0) {
+    *kind = PATH_MANUAL_TENSOR_S2G;
+    return 0;
+  }
+  if (strcmp(text, "tma_tensor_s2g") == 0 ||
+      strcmp(text, "tma_g2s_tensor_s2g_store") == 0) {
+    *kind = PATH_TMA_TENSOR_S2G;
+    return 0;
+  }
+  fprintf(stderr, "unknown path '%s', expected manual, manual_s2g, tma_s2g, manual_tensor_s2g or tma_tensor_s2g\n", text);
+  return 1;
+}
+
+static const char *mode_name(CompareMode mode)
+{
+  switch (mode) {
+  case MODE_MANUAL_S2G: return "manual_s2g";
+  case MODE_TMA_S2G: return "tma_s2g";
+  case MODE_MANUAL_TENSOR_S2G: return "manual_tensor_s2g";
+  case MODE_TMA_TENSOR_S2G: return "tma_tensor_s2g";
+  default: return "unknown";
+  }
+}
+
+static PathKind mode_opt_path(CompareMode mode)
+{
+  switch (mode) {
+  case MODE_TMA_S2G: return PATH_TMA_S2G;
+  case MODE_MANUAL_TENSOR_S2G: return PATH_MANUAL_TENSOR_S2G;
+  case MODE_TMA_TENSOR_S2G: return PATH_TMA_TENSOR_S2G;
+  case MODE_MANUAL_S2G:
+  default: return PATH_MANUAL_S2G;
+  }
+}
+
+static int parse_compare_mode(const char *text, CompareMode *mode)
+{
+  if (strcmp(text, "manual_s2g") == 0 ||
+      strcmp(text, "manual_in_s2g_store") == 0) {
+    *mode = MODE_MANUAL_S2G;
+    return 0;
+  }
+  if (strcmp(text, "tma_s2g") == 0 ||
+      strcmp(text, "tma_g2s_s2g_store") == 0) {
+    *mode = MODE_TMA_S2G;
+    return 0;
+  }
+  if (strcmp(text, "manual_tensor_s2g") == 0 ||
+      strcmp(text, "manual_in_tensor_s2g_store") == 0) {
+    *mode = MODE_MANUAL_TENSOR_S2G;
+    return 0;
+  }
+  if (strcmp(text, "tma_tensor_s2g") == 0 ||
+      strcmp(text, "tma_g2s_tensor_s2g_store") == 0) {
+    *mode = MODE_TMA_TENSOR_S2G;
+    return 0;
+  }
+  fprintf(stderr, "unknown mode '%s', expected manual_s2g, tma_s2g, manual_tensor_s2g or tma_tensor_s2g\n", text);
   return 1;
 }
 
@@ -226,6 +317,70 @@ static const char *tma_kernel_name(PipelineCase c)
   }
 }
 
+static const char *manual_s2g_kernel_name(PipelineCase c)
+{
+  if (c.buffers != 2u) return NULL;
+  switch (c.stages) {
+  case 1: return "manual_s2g_b2_s1_kernel";
+  case 2: return "manual_s2g_b2_s2_kernel";
+  case 4: return "manual_s2g_b2_s4_kernel";
+  case 8: return "manual_s2g_b2_s8_kernel";
+  case 16: return "manual_s2g_b2_s16_kernel";
+  default: return NULL;
+  }
+}
+
+static const char *tma_s2g_kernel_name(PipelineCase c)
+{
+  if (c.buffers != 2u) return NULL;
+  switch (c.stages) {
+  case 1: return "tma_s2g_b2_s1_kernel";
+  case 2: return "tma_s2g_b2_s2_kernel";
+  case 4: return "tma_s2g_b2_s4_kernel";
+  case 8: return "tma_s2g_b2_s8_kernel";
+  case 16: return "tma_s2g_b2_s16_kernel";
+  default: return NULL;
+  }
+}
+
+static const char *manual_tensor_s2g_kernel_name(PipelineCase c)
+{
+  if (c.buffers != 2u) return NULL;
+  switch (c.stages) {
+  case 1: return "manual_tensor_s2g_b2_s1_kernel";
+  case 2: return "manual_tensor_s2g_b2_s2_kernel";
+  case 4: return "manual_tensor_s2g_b2_s4_kernel";
+  case 8: return "manual_tensor_s2g_b2_s8_kernel";
+  case 16: return "manual_tensor_s2g_b2_s16_kernel";
+  default: return NULL;
+  }
+}
+
+static const char *tma_tensor_s2g_kernel_name(PipelineCase c)
+{
+  if (c.buffers != 2u) return NULL;
+  switch (c.stages) {
+  case 1: return "tma_tensor_s2g_b2_s1_kernel";
+  case 2: return "tma_tensor_s2g_b2_s2_kernel";
+  case 4: return "tma_tensor_s2g_b2_s4_kernel";
+  case 8: return "tma_tensor_s2g_b2_s8_kernel";
+  case 16: return "tma_tensor_s2g_b2_s16_kernel";
+  default: return NULL;
+  }
+}
+
+static const char *selected_kernel_name(PathKind kind, PipelineCase c)
+{
+  switch (kind) {
+  case PATH_MANUAL: return manual_kernel_name(c);
+  case PATH_MANUAL_S2G: return manual_s2g_kernel_name(c);
+  case PATH_TMA_S2G: return tma_s2g_kernel_name(c);
+  case PATH_MANUAL_TENSOR_S2G: return manual_tensor_s2g_kernel_name(c);
+  case PATH_TMA_TENSOR_S2G: return tma_tensor_s2g_kernel_name(c);
+  default: return NULL;
+  }
+}
+
 
 
 static void build_desc(uint32_t *desc, PipelineCase c)
@@ -314,14 +469,17 @@ static int event_duration_ns(cl_event event, uint64_t *duration_ns)
 }
 
 static int run_setup_kernel(cl_command_queue queue, cl_kernel kernel,
-                            cl_mem g2s_desc, cl_mem input_buf)
+                            cl_mem g2s_desc, cl_mem s2g_desc,
+                            cl_mem input_buf, cl_mem output_buf)
 {
   cl_int err;
   size_t global = 1;
   size_t local = 1;
   cl_event event = NULL;
   err  = clSetKernelArg(kernel, 0, sizeof(g2s_desc), &g2s_desc);
-  err |= clSetKernelArg(kernel, 1, sizeof(input_buf), &input_buf);
+  err |= clSetKernelArg(kernel, 1, sizeof(s2g_desc), &s2g_desc);
+  err |= clSetKernelArg(kernel, 2, sizeof(input_buf), &input_buf);
+  err |= clSetKernelArg(kernel, 3, sizeof(output_buf), &output_buf);
   if (err != CL_SUCCESS) return 1;
   err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global, &local,
                                0, NULL, &event);
@@ -332,20 +490,30 @@ static int run_setup_kernel(cl_command_queue queue, cl_kernel kernel,
 }
 
 static int run_measured_kernel(cl_command_queue queue, PathKind kind,
-                               cl_kernel manual_kernel, cl_kernel tma_kernel,
-                               cl_mem g2s_desc,
+                               cl_kernel kernel,
+                               cl_mem g2s_desc, cl_mem s2g_desc,
                                cl_mem input_buf, cl_mem output_buf,
                                PipelineCase c, uint64_t *ns)
 {
   cl_int err;
-  cl_kernel kernel = kind == PATH_TMA ? tma_kernel : manual_kernel;
   size_t global = WG_SIZE;
   size_t local = WG_SIZE;
   cl_event event = NULL;
-  if (kind == PATH_TMA) {
+  if (kind == PATH_TMA_S2G) {
     err  = clSetKernelArg(kernel, 0, sizeof(g2s_desc), &g2s_desc);
     err |= clSetKernelArg(kernel, 1, sizeof(input_buf), &input_buf);
     err |= clSetKernelArg(kernel, 2, sizeof(output_buf), &output_buf);
+  } else if (kind == PATH_TMA_TENSOR_S2G) {
+    err  = clSetKernelArg(kernel, 0, sizeof(g2s_desc), &g2s_desc);
+    err |= clSetKernelArg(kernel, 1, sizeof(s2g_desc), &s2g_desc);
+    err |= clSetKernelArg(kernel, 2, sizeof(input_buf), &input_buf);
+    err |= clSetKernelArg(kernel, 3, sizeof(output_buf), &output_buf);
+  } else if (kind == PATH_MANUAL_TENSOR_S2G) {
+    err  = clSetKernelArg(kernel, 0, sizeof(input_buf), &input_buf);
+    err |= clSetKernelArg(kernel, 1, sizeof(output_buf), &output_buf);
+    err |= clSetKernelArg(kernel, 2, sizeof(s2g_desc), &s2g_desc);
+    err |= clSetKernelArg(kernel, 3, sizeof(c.buffers), &c.buffers);
+    err |= clSetKernelArg(kernel, 4, sizeof(c.stages), &c.stages);
   } else {
     err  = clSetKernelArg(kernel, 0, sizeof(input_buf), &input_buf);
     err |= clSetKernelArg(kernel, 1, sizeof(output_buf), &output_buf);
@@ -408,20 +576,21 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
   cl_command_queue queue = NULL;
   cl_program program = NULL;
   cl_kernel setup_kernel = NULL;
-  cl_kernel manual_kernel = NULL;
-  cl_kernel tma_kernel = NULL;
+  cl_kernel measured_kernel = NULL;
   cl_mem g2s_desc_buf = NULL;
+  cl_mem s2g_desc_buf = NULL;
   cl_mem input_buf = NULL;
   cl_mem output_buf = NULL;
   float *input = NULL, *ref = NULL, *got = NULL;
   uint32_t g2s_desc[DESC_WORDS];
+  uint32_t s2g_desc[DESC_WORDS];
   uint32_t elements = case_elements(c);
   uint64_t ns = 0;
   int exit_code = 1;
   size_t bytes = (size_t)elements * sizeof(float);
-  const char *source_path = getenv("VENTUS_TMA_PINGPONG_SOURCE");
+  const char *source_path = getenv("VENTUS_DMA_TMA_TENSOR_S2G_PINGPONG_SOURCE");
   if (!source_path || !source_path[0]) {
-    source_path = "tma_pingpong_pipeline_perf_test.cl";
+    source_path = "dma_tma_tensor_s2g_pingpong_perf_test.cl";
   }
 
   printf("CASE path=%s rows=%u cols=%u buffers=%u stages=%u elements=%u compute_iters=1 wg_size=%u single_wg=1\n",
@@ -436,6 +605,7 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
   cpu_ref(input, ref, c);
   memset(got, 0, bytes);
   build_desc(g2s_desc, c);
+  build_desc(s2g_desc, c);
 
   err = ventus_get_default_device(&context, &device, &queue, NULL);
   CHECK_OPENCL_ERROR_IN("ventus_get_default_device");
@@ -447,21 +617,17 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
   CHECK_OPENCL_ERROR_IN("build_program_with_tile_options");
   setup_kernel = clCreateKernel(program, "setup_desc_kernel", &err);
   CHECK_OPENCL_ERROR_IN("clCreateKernel(setup_desc)");
-  if (kind == PATH_TMA) {
-    const char *kernel_name = tma_kernel_name(c);
-    if (!kernel_name) goto FINISH;
-    tma_kernel = clCreateKernel(program, kernel_name, &err);
-    CHECK_OPENCL_ERROR_IN("clCreateKernel(tma)");
-  } else {
-    const char *kernel_name = manual_kernel_name(c);
-    if (!kernel_name) goto FINISH;
-    manual_kernel = clCreateKernel(program, kernel_name, &err);
-    CHECK_OPENCL_ERROR_IN("clCreateKernel(manual)");
-  }
+  const char *kernel_name = selected_kernel_name(kind, c);
+  if (!kernel_name) goto FINISH;
+  measured_kernel = clCreateKernel(program, kernel_name, &err);
+  CHECK_OPENCL_ERROR_IN("clCreateKernel(measured)");
 
   g2s_desc_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
                                 sizeof(g2s_desc), g2s_desc, &err);
   CHECK_OPENCL_ERROR_IN("clCreateBuffer(g2s_desc)");
+  s2g_desc_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                                sizeof(s2g_desc), s2g_desc, &err);
+  CHECK_OPENCL_ERROR_IN("clCreateBuffer(s2g_desc)");
   input_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                              bytes, input, &err);
   CHECK_OPENCL_ERROR_IN("clCreateBuffer(input)");
@@ -469,12 +635,12 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
                               bytes, got, &err);
   CHECK_OPENCL_ERROR_IN("clCreateBuffer(output)");
 
-  if (run_setup_kernel(queue, setup_kernel, g2s_desc_buf,
-                       input_buf) != 0) goto FINISH;
+  if (run_setup_kernel(queue, setup_kernel, g2s_desc_buf, s2g_desc_buf,
+                       input_buf, output_buf) != 0) goto FINISH;
   err = clFinish(queue);
   CHECK_OPENCL_ERROR_IN("clFinish(setup)");
-  if (run_measured_kernel(queue, kind, manual_kernel, tma_kernel,
-                          g2s_desc_buf,
+  if (run_measured_kernel(queue, kind, measured_kernel,
+                          g2s_desc_buf, s2g_desc_buf,
                           input_buf, output_buf, c, &ns) != 0) goto FINISH;
   err = clFinish(queue);
   CHECK_OPENCL_ERROR_IN("clFinish(measured)");
@@ -502,9 +668,9 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
 FINISH:
   if (output_buf) clReleaseMemObject(output_buf);
   if (input_buf) clReleaseMemObject(input_buf);
+  if (s2g_desc_buf) clReleaseMemObject(s2g_desc_buf);
   if (g2s_desc_buf) clReleaseMemObject(g2s_desc_buf);
-  if (tma_kernel) clReleaseKernel(tma_kernel);
-  if (manual_kernel) clReleaseKernel(manual_kernel);
+  if (measured_kernel) clReleaseKernel(measured_kernel);
   if (setup_kernel) clReleaseKernel(setup_kernel);
   if (program) clReleaseProgram(program);
   if (queue) clReleaseCommandQueue(queue);
@@ -590,11 +756,11 @@ static void make_child_paths(ChildRun *child)
   char stamp[32];
   make_timestamp(stamp, sizeof(stamp));
   snprintf(child->log_path, sizeof(child->log_path),
-           LOG_DIR "/tma_pingpong_pipeline_perf_child_%s_%ld_%s_r%u_c%u_b%u_s%u.log",
+           LOG_DIR "/dma_tma_tensor_s2g_pingpong_perf_child_%s_%ld_%s_r%u_c%u_b%u_s%u.log",
            stamp, (long)getpid(), path_name(child->kind),
            child->c.rows, child->c.cols, child->c.buffers, child->c.stages);
   snprintf(child->run_dir, sizeof(child->run_dir),
-           LOG_DIR "/tma_pingpong_pipeline_perf_run_%s_%ld_%s_r%u_c%u_b%u_s%u",
+           LOG_DIR "/dma_tma_tensor_s2g_pingpong_perf_run_%s_%ld_%s_r%u_c%u_b%u_s%u",
            stamp, (long)getpid(), path_name(child->kind),
            child->c.rows, child->c.cols, child->c.buffers, child->c.stages);
 }
@@ -618,7 +784,7 @@ static int launch_child(const char *prog, PathKind kind, PipelineCase c,
   if (!getcwd(cwd, sizeof(cwd))) return 1;
   if (make_absolute_path(exe_abs, sizeof(exe_abs), cwd, prog) != 0) return 1;
   snprintf(source_abs, sizeof(source_abs),
-           "%s/tma_pingpong_pipeline_perf_test.cl", cwd);
+           "%s/dma_tma_tensor_s2g_pingpong_perf_test.cl", cwd);
   if (ensure_dir(LOG_DIR) != 0) return 1;
   if (mkdir(child->run_dir, 0775) != 0) return 1;
   header = fopen(child->log_path, "w");
@@ -635,7 +801,7 @@ static int launch_child(const char *prog, PathKind kind, PipelineCase c,
   if (pid < 0) return 1;
   if (pid == 0) {
     FILE *out = fopen(child->log_path, "a");
-    setenv("VENTUS_TMA_PINGPONG_SOURCE", source_abs, 1);
+    setenv("VENTUS_DMA_TMA_TENSOR_S2G_PINGPONG_SOURCE", source_abs, 1);
     if (out) {
       dup2(fileno(out), STDOUT_FILENO);
       dup2(fileno(out), STDERR_FILENO);
@@ -721,21 +887,25 @@ static void stop_children(ChildRun *children)
   }
 }
 
-static int run_pair(const char *prog, PipelineCase c, CaseResult *out)
+static int run_pair(const char *prog, CompareMode mode, PipelineCase c,
+                    CaseResult *out)
 {
   ChildRun children[PATH_COUNT];
   uint32_t completed = 0;
+  const uint32_t expected = 2;
+  PathKind opt_path = mode_opt_path(mode);
   memset(children, 0, sizeof(children));
   memset(out, 0, sizeof(*out));
+  out->mode = mode;
   out->c = c;
 
   if (launch_child(prog, PATH_MANUAL, c, &children[PATH_MANUAL]) != 0 ||
-      launch_child(prog, PATH_TMA, c, &children[PATH_TMA]) != 0) {
+      launch_child(prog, opt_path, c, &children[opt_path]) != 0) {
     stop_children(children);
     return 1;
   }
 
-  while (completed < PATH_COUNT) {
+  while (completed < expected) {
     int status = 0;
     pid_t done = waitpid(-1, &status, 0);
     if (done < 0) {
@@ -761,7 +931,7 @@ static int run_pair(const char *prog, PipelineCase c, CaseResult *out)
       return 1;
     }
 
-    PathResult *target = children[slot].kind == PATH_TMA ? &out->tma : &out->manual;
+    PathResult *target = children[slot].kind == PATH_MANUAL ? &out->manual : &out->opt;
     if (parse_child_log(&children[slot], target) != 0) {
       fprintf(stderr, "failed to parse child log %s\n", children[slot].log_path);
       stop_children(children);
@@ -794,20 +964,20 @@ static void print_result_row(FILE *f, const CaseResult *r)
 {
   double cycle_speed = 0.0;
   double cycle_improve = 0.0;
-  double ns_speed = speedup_u64(r->manual.ns, r->tma.ns);
+  double ns_speed = speedup_u64(r->manual.ns, r->opt.ns);
   double ns_improve = improvement_percent(ns_speed);
-  if (r->manual.cycle_valid && r->tma.cycle_valid) {
-    cycle_speed = speedup_u64(r->manual.cycles, r->tma.cycles);
+  if (r->manual.cycle_valid && r->opt.cycle_valid) {
+    cycle_speed = speedup_u64(r->manual.cycles, r->opt.cycles);
     cycle_improve = improvement_percent(cycle_speed);
     fprintf(f, "| %u | %u | %u | %u | %u | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f |\n",
             r->c.rows, r->c.cols, r->c.buffers, r->c.stages,
-            r->manual.elements, r->manual.cycles, r->tma.cycles,
-            cycle_speed, cycle_improve, r->manual.ns, r->tma.ns,
+            r->manual.elements, r->manual.cycles, r->opt.cycles,
+            cycle_speed, cycle_improve, r->manual.ns, r->opt.ns,
             ns_speed, ns_improve);
   } else {
     fprintf(f, "| %u | %u | %u | %u | %u | NA | NA | NA | NA | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f |\n",
             r->c.rows, r->c.cols, r->c.buffers, r->c.stages,
-            r->manual.elements, r->manual.ns, r->tma.ns,
+            r->manual.elements, r->manual.ns, r->opt.ns,
             ns_speed, ns_improve);
   }
 }
@@ -822,36 +992,61 @@ static int write_report(const CaseResult *results, size_t count)
   make_timestamp(stamp, sizeof(stamp));
   if (ensure_dir(LOG_DIR) != 0) return 1;
   snprintf(path, sizeof(path),
-           LOG_DIR "/tma_pingpong_pipeline_perf_report_%s.md", stamp);
+           LOG_DIR "/dma_tma_tensor_s2g_pingpong_perf_%s_report_%s.md",
+           count ? mode_name(results[0].mode) : "unknown", stamp);
   f = fopen(path, "w");
   if (!f) return 1;
-  fprintf(f, "# TMA Ping-Pong Pipeline Performance Report\n\n");
+  fprintf(f, "# DMA/TMA S2G Ping-Pong Pipeline Performance Report\n\n");
+  fprintf(f, "- compare_mode: %s\n", count ? mode_name(results[0].mode) : "unknown");
   fprintf(f, "- tile_sweep: %s FP32 tiles, one work-group\n", sweep_tile_text);
   fprintf(f, "- compute_iters: 1 fixed\n");
   fprintf(f, "- buffer_sweep: 2 active shared-memory tile buffers\n");
   fprintf(f, "- stage_sweep: 1, 2, 4, 8, 16 tiles per work-group\n");
   fprintf(f, "- manual_path: global/L2 -> register -> shared -> compute -> register -> global\n");
-  fprintf(f, "- tma_path: descriptor TMA G2S -> shared compute -> ordinary shared/register/global store\n");
+  const char *opt_desc = "unknown";
+  if (count) {
+    switch (results[0].mode) {
+    case MODE_TMA_S2G:
+      opt_desc = "descriptor TMA G2S -> shared compute -> CP_ASYNC_BULK_S2G global writeback";
+      break;
+    case MODE_MANUAL_TENSOR_S2G:
+      opt_desc = "manual global/shared input -> shared compute -> CP_ASYNC_TENSOR_S2G global writeback";
+      break;
+    case MODE_TMA_TENSOR_S2G:
+      opt_desc = "descriptor TMA G2S -> shared compute -> CP_ASYNC_TENSOR_S2G global writeback";
+      break;
+    case MODE_MANUAL_S2G:
+    default:
+      opt_desc = "manual global/shared input -> shared compute -> CP_ASYNC_BULK_S2G global writeback";
+      break;
+    }
+  }
+  fprintf(f, "- optimized_path: %s\n", opt_desc);
+  if (count && (results[0].mode == MODE_MANUAL_S2G ||
+                results[0].mode == MODE_MANUAL_TENSOR_S2G)) {
+    fprintf(f, "- manual_s2g_schedule: 3 shared output buffers, issue/writeback split, wait-group before buffer reuse\n");
+  }
   fprintf(f, "- primary_metric: GVM PMU active cycles when available; host ns is auxiliary\n\n");
-  fprintf(f, "PINGPONG_SWEEP_TABLE_BEGIN\n");
-  fprintf(f, "| rows | cols | buffers | stages | elements | manual_cycles | tma_cycles | cycle_speedup | cycle_improvement_percent | manual_ns | tma_ns | ns_speedup | ns_improvement_percent |\n");
+  fprintf(f, "S2G_PINGPONG_SWEEP_TABLE_BEGIN\n");
+  fprintf(f, "| rows | cols | buffers | stages | elements | manual_cycles | opt_cycles | cycle_speedup | cycle_improvement_percent | manual_ns | opt_ns | ns_speedup | ns_improvement_percent |\n");
   fprintf(f, "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
   for (size_t i = 0; i < count; i++) {
     double speed = 0.0;
     print_result_row(f, &results[i]);
-    if (results[i].manual.cycle_valid && results[i].tma.cycle_valid) {
-      speed = speedup_u64(results[i].manual.cycles, results[i].tma.cycles);
+    if (results[i].manual.cycle_valid && results[i].opt.cycle_valid) {
+      speed = speedup_u64(results[i].manual.cycles, results[i].opt.cycles);
     } else {
-      speed = speedup_u64(results[i].manual.ns, results[i].tma.ns);
+      speed = speedup_u64(results[i].manual.ns, results[i].opt.ns);
     }
     if (!best || speed > best_speed) {
       best = &results[i];
       best_speed = speed;
     }
   }
-  fprintf(f, "PINGPONG_SWEEP_TABLE_END\n\n");
+  fprintf(f, "S2G_PINGPONG_SWEEP_TABLE_END\n\n");
   if (best) {
-    fprintf(f, "BEST_PINGPONG rows=%u cols=%u buffers=%u stages=%u speedup=%.4fx improvement_percent=%.2f\n",
+    fprintf(f, "BEST_S2G_PINGPONG mode=%s rows=%u cols=%u buffers=%u stages=%u speedup=%.4fx improvement_percent=%.2f\n",
+            mode_name(best->mode),
             best->c.rows, best->c.cols, best->c.buffers, best->c.stages,
             best_speed, improvement_percent(best_speed));
   }
@@ -860,7 +1055,7 @@ static int write_report(const CaseResult *results, size_t count)
   return 0;
 }
 
-static int run_single_or_sweep(const char *prog, int sweep,
+static int run_single_or_sweep(const char *prog, CompareMode mode, int sweep,
                                PipelineCase single_case)
 {
   CaseResult results[sizeof(sweep_tiles) / sizeof(sweep_tiles[0]) *
@@ -873,14 +1068,14 @@ static int run_single_or_sweep(const char *prog, int sweep,
         for (size_t si = 0; si < sizeof(sweep_stages) / sizeof(sweep_stages[0]); si++) {
           PipelineCase c = {sweep_tiles[ti].rows, sweep_tiles[ti].cols,
                             sweep_buffers[bi], sweep_stages[si]};
-          if (run_pair(prog, c, &results[count]) != 0) return 1;
+          if (run_pair(prog, mode, c, &results[count]) != 0) return 1;
           print_result_row(stdout, &results[count]);
           count++;
         }
       }
     }
   } else {
-    if (run_pair(prog, single_case, &results[count]) != 0) return 1;
+    if (run_pair(prog, mode, single_case, &results[count]) != 0) return 1;
     print_result_row(stdout, &results[count]);
     count++;
   }
@@ -892,10 +1087,10 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s\n"
-          "  %s sweep\n"
-          "  %s single <buffers> <stages>                 # default 16x16\n"
-          "  %s single <rows> <cols> <buffers> <stages>\n"
-          "  %s child manual|tma <rows> <cols> <buffers> <stages>\n",
+          "  %s sweep manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g\n"
+          "  %s single manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g <buffers> <stages>                 # default 16x16\n"
+          "  %s single manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g <rows> <cols> <buffers> <stages>\n"
+          "  %s child manual|manual_s2g|tma_s2g|manual_tensor_s2g|tma_tensor_s2g <rows> <cols> <buffers> <stages>\n",
           prog, prog, prog, prog, prog);
 }
 
@@ -903,15 +1098,18 @@ int main(int argc, char **argv)
 {
   PipelineCase c = {DEFAULT_TILE_ROWS, DEFAULT_TILE_COLS,
                     DEFAULT_BUFFERS, DEFAULT_STAGES};
+  CompareMode mode = MODE_MANUAL_S2G;
   if (argc == 1) {
-    return run_single_or_sweep(argv[0], 1, c);
+    return run_single_or_sweep(argv[0], mode, 1, c);
   }
-  if (strcmp(argv[1], "sweep") == 0 && argc == 2) {
-    return run_single_or_sweep(argv[0], 1, c);
+  if (strcmp(argv[1], "sweep") == 0 && argc == 3) {
+    if (parse_compare_mode(argv[2], &mode)) return 1;
+    return run_single_or_sweep(argv[0], mode, 1, c);
   }
-  if (strcmp(argv[1], "single") == 0 && (argc == 4 || argc == 6)) {
-    int arg = 2;
-    if (argc == 6) {
+  if (strcmp(argv[1], "single") == 0 && (argc == 5 || argc == 7)) {
+    int arg = 3;
+    if (parse_compare_mode(argv[2], &mode)) return 1;
+    if (argc == 7) {
       if (parse_u32(argv[arg++], 1, MAX_TILE_ROWS, "rows", &c.rows) ||
           parse_u32(argv[arg++], 1, MAX_TILE_COLS, "cols", &c.cols)) {
         return 1;
@@ -922,7 +1120,7 @@ int main(int argc, char **argv)
         validate_case(c)) {
       return 1;
     }
-    return run_single_or_sweep(argv[0], 0, c);
+    return run_single_or_sweep(argv[0], mode, 0, c);
   }
   if (strcmp(argv[1], "child") == 0 && (argc == 5 || argc == 7)) {
     PathKind kind;

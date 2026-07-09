@@ -1,0 +1,5 @@
+*.out
+object*.cl
+object*.riscv
+object*.riscv.log
+log/

@@ -1,30 +1,31 @@
 /*
- * TMA roundtrip pipeline performance test.
+ * TMA ping-pong pipeline performance test.
  *
  * Background:
- *   Measure an end-to-end tile path that includes input movement, shared-memory
+ *   Measure a ping-pong double-buffer tile path that includes input movement, shared-memory
  *   compute, and output movement. The manual path performs
  *   global -> register -> shared, compute, and shared -> register -> global.
  *   The TMA path uses descriptor CP_ASYNC_TENSOR G2S for the input side,
  *   then uses the same ordinary shared/register/global store as the manual path.
  *
  * Implementation:
- *   The test scans the number of shared-memory buffers and the number of tiles
+ *   The test fixes shared-memory buffers at two and scans the number of tiles
  *   processed by one work-group. Compute intensity is fixed to one FP32 FMA-like
  *   update per element. Parent modes spawn isolated child runs so each child has
  *   its own POCL/GVM temporary files and log. Existing GVM PMU summaries are
  *   parsed from those logs when available.
  *
  * Usage:
- *   ./tma_roundtrip_pipeline_perf_test.out
- *   ./tma_roundtrip_pipeline_perf_test.out sweep
- *   ./tma_roundtrip_pipeline_perf_test.out single <buffers> <stages>
- *   ./tma_roundtrip_pipeline_perf_test.out child manual <buffers> <stages>
- *   ./tma_roundtrip_pipeline_perf_test.out child tma <buffers> <stages>
+ *   ./dma_tma_g2s_pingpong_perf_test.out
+ *   ./dma_tma_g2s_pingpong_perf_test.out sweep
+ *   ./dma_tma_g2s_pingpong_perf_test.out single <buffers> <stages>
+ *   ./dma_tma_g2s_pingpong_perf_test.out single <rows> <cols> <buffers> <stages>
+ *   ./dma_tma_g2s_pingpong_perf_test.out child manual|tma <rows> <cols> <buffers> <stages>
  */
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdint.h>
@@ -41,11 +42,12 @@
 
 #define DESC_WORDS 32u
 #define COORD_WORDS 32u
-#define TILE_ROWS 16u
-#define TILE_COLS 16u
-#define TILE_WORDS (TILE_ROWS * TILE_COLS)
+#define DEFAULT_TILE_ROWS 16u
+#define DEFAULT_TILE_COLS 16u
+#define MAX_TILE_ROWS 64u
+#define MAX_TILE_COLS 64u
 #define MAX_BUFFERS 8u
-#define MAX_STAGES 8u
+#define MAX_STAGES 16u
 #define WG_SIZE 32u
 #define DEFAULT_BUFFERS 2u
 #define DEFAULT_STAGES 4u
@@ -53,10 +55,18 @@
 
 typedef enum {
   PATH_MANUAL = 0,
-  PATH_TMA = 1
+  PATH_TMA = 1,
+  PATH_COUNT = 2
 } PathKind;
 
 typedef struct {
+  uint32_t rows;
+  uint32_t cols;
+} TileSize;
+
+typedef struct {
+  uint32_t rows;
+  uint32_t cols;
   uint32_t buffers;
   uint32_t stages;
 } PipelineCase;
@@ -82,16 +92,25 @@ typedef struct {
   PathKind kind;
   PipelineCase c;
   pid_t pid;
+  int active;
   char log_path[256];
   char run_dir[256];
 } ChildRun;
 
-static const uint32_t sweep_buffers[] = {2u, 3u, 4u, 6u, 8u};
-static const uint32_t sweep_stages[] = {1u, 2u, 3u, 4u, 8u};
+static const TileSize sweep_tiles[] = {
+  {16u, 16u},
+  {32u, 16u},
+  {32u, 32u},
+  {64u, 32u},
+  {64u, 64u},
+};
+static const uint32_t sweep_buffers[] = {2u};
+static const uint32_t sweep_stages[] = {1u, 2u, 4u, 8u, 16u};
+static const char *sweep_tile_text = "16x16, 32x16, 32x32, 64x32, 64x64";
 
 static const char *path_name(PathKind kind)
 {
-  return kind == PATH_TMA ? "tma_g2s_manual_store" : "manual";
+  return kind == PATH_TMA ? "tma_pingpong_g2s_manual_store" : "manual";
 }
 
 static const char *path_arg(PathKind kind)
@@ -105,9 +124,9 @@ static int parse_path_kind(const char *text, PathKind *kind)
     *kind = PATH_MANUAL;
     return 0;
   }
-  if (strcmp(text, "tma") == 0 || strcmp(text, "tma_roundtrip") == 0 ||
+  if (strcmp(text, "tma") == 0 || strcmp(text, "tma_pingpong") == 0 ||
       strcmp(text, "tma_g2s") == 0 ||
-      strcmp(text, "tma_g2s_manual_store") == 0) {
+      strcmp(text, "tma_pingpong_g2s_manual_store") == 0) {
     *kind = PATH_TMA;
     return 0;
   }
@@ -132,16 +151,18 @@ static int parse_u32(const char *text, uint32_t min_value, uint32_t max_value,
 
 static int is_supported_value(uint32_t value, const uint32_t *values,
                               size_t count);
+static int is_supported_tile(uint32_t rows, uint32_t cols);
 
 static int validate_case(PipelineCase c)
 {
-  if (!is_supported_value(c.buffers, sweep_buffers,
+  if (!is_supported_tile(c.rows, c.cols) ||
+      !is_supported_value(c.buffers, sweep_buffers,
                           sizeof(sweep_buffers) / sizeof(sweep_buffers[0])) ||
       !is_supported_value(c.stages, sweep_stages,
                           sizeof(sweep_stages) / sizeof(sweep_stages[0]))) {
     fprintf(stderr,
-            "invalid case: buffers=%u stages=%u; supported buffers are 2,3,4,6,8 and supported stages are 1,2,3,4,8\n",
-            c.buffers, c.stages);
+            "invalid case: rows=%u cols=%u buffers=%u stages=%u; supported tiles are %s, supported buffers are 2 and supported stages are 1,2,4,8,16\n",
+            c.rows, c.cols, c.buffers, c.stages, sweep_tile_text);
     return 1;
   }
   return 0;
@@ -152,9 +173,14 @@ static uint32_t desc_control(unsigned data_type, unsigned rank)
   return (data_type & 0xfu) | ((rank & 0xfu) << 4);
 }
 
+static uint32_t tile_words(PipelineCase c)
+{
+  return c.rows * c.cols;
+}
+
 static uint32_t case_elements(PipelineCase c)
 {
-  return TILE_WORDS * c.stages;
+  return tile_words(c) * c.stages;
 }
 
 static int is_supported_value(uint32_t value, const uint32_t *values,
@@ -166,57 +192,41 @@ static int is_supported_value(uint32_t value, const uint32_t *values,
   return 0;
 }
 
+static int is_supported_tile(uint32_t rows, uint32_t cols)
+{
+  for (size_t i = 0; i < sizeof(sweep_tiles) / sizeof(sweep_tiles[0]); i++) {
+    if (rows == sweep_tiles[i].rows && cols == sweep_tiles[i].cols) return 1;
+  }
+  return 0;
+}
+
+static const char *manual_kernel_name(PipelineCase c)
+{
+  if (c.buffers != 2u) return NULL;
+  switch (c.stages) {
+  case 1: return "manual_pingpong_b2_s1_kernel";
+  case 2: return "manual_pingpong_b2_s2_kernel";
+  case 4: return "manual_pingpong_b2_s4_kernel";
+  case 8: return "manual_pingpong_b2_s8_kernel";
+  case 16: return "manual_pingpong_b2_s16_kernel";
+  default: return NULL;
+  }
+}
+
 static const char *tma_kernel_name(PipelineCase c)
 {
-  switch (c.buffers) {
-  case 2:
-    switch (c.stages) {
-    case 1: return "tma_roundtrip_b2_s1_kernel";
-    case 2: return "tma_roundtrip_b2_s2_kernel";
-    case 3: return "tma_roundtrip_b2_s3_kernel";
-    case 4: return "tma_roundtrip_b2_s4_kernel";
-    case 8: return "tma_roundtrip_b2_s8_kernel";
-    }
-    break;
-  case 3:
-    switch (c.stages) {
-    case 1: return "tma_roundtrip_b3_s1_kernel";
-    case 2: return "tma_roundtrip_b3_s2_kernel";
-    case 3: return "tma_roundtrip_b3_s3_kernel";
-    case 4: return "tma_roundtrip_b3_s4_kernel";
-    case 8: return "tma_roundtrip_b3_s8_kernel";
-    }
-    break;
-  case 4:
-    switch (c.stages) {
-    case 1: return "tma_roundtrip_b4_s1_kernel";
-    case 2: return "tma_roundtrip_b4_s2_kernel";
-    case 3: return "tma_roundtrip_b4_s3_kernel";
-    case 4: return "tma_roundtrip_b4_s4_kernel";
-    case 8: return "tma_roundtrip_b4_s8_kernel";
-    }
-    break;
-  case 6:
-    switch (c.stages) {
-    case 1: return "tma_roundtrip_b6_s1_kernel";
-    case 2: return "tma_roundtrip_b6_s2_kernel";
-    case 3: return "tma_roundtrip_b6_s3_kernel";
-    case 4: return "tma_roundtrip_b6_s4_kernel";
-    case 8: return "tma_roundtrip_b6_s8_kernel";
-    }
-    break;
-  case 8:
-    switch (c.stages) {
-    case 1: return "tma_roundtrip_b8_s1_kernel";
-    case 2: return "tma_roundtrip_b8_s2_kernel";
-    case 3: return "tma_roundtrip_b8_s3_kernel";
-    case 4: return "tma_roundtrip_b8_s4_kernel";
-    case 8: return "tma_roundtrip_b8_s8_kernel";
-    }
-    break;
+  if (c.buffers != 2u) return NULL;
+  switch (c.stages) {
+  case 1: return "tma_pingpong_b2_s1_kernel";
+  case 2: return "tma_pingpong_b2_s2_kernel";
+  case 4: return "tma_pingpong_b2_s4_kernel";
+  case 8: return "tma_pingpong_b2_s8_kernel";
+  case 16: return "tma_pingpong_b2_s16_kernel";
+  default: return NULL;
   }
-  return NULL;
 }
+
+
 
 static void build_desc(uint32_t *desc, PipelineCase c)
 {
@@ -225,14 +235,14 @@ static void build_desc(uint32_t *desc, PipelineCase c)
   desc[1] = desc_control(6, 2);  /* FP32, rank=2 */
   desc[2] = 0;                   /* setup kernel patches runtime base */
   desc[3] = 128;
-  desc[4] = TILE_COLS;
-  desc[5] = TILE_ROWS * c.stages;
+  desc[4] = c.cols;
+  desc[5] = c.rows * c.stages;
   desc[6] = desc[7] = desc[8] = 1;
   desc[9] = sizeof(float);
-  desc[10] = TILE_COLS * sizeof(float);
+  desc[10] = c.cols * sizeof(float);
   desc[11] = desc[12] = desc[13] = 0;
-  desc[14] = TILE_COLS;
-  desc[15] = TILE_ROWS;
+  desc[14] = c.cols;
+  desc[15] = c.rows;
   desc[16] = desc[17] = desc[18] = 1;
   for (uint32_t i = 0; i < 5; i++) desc[19 + i] = 1;
 }
@@ -359,6 +369,37 @@ static int run_measured_kernel(cl_command_queue queue, PathKind kind,
   return 0;
 }
 
+static cl_int build_program_with_tile_options(cl_context context,
+                                              cl_device_id device,
+                                              const char *source_path,
+                                              PipelineCase c,
+                                              cl_program *program)
+{
+  size_t source_size = 0;
+  char *source = ventus_read_text_file(source_path, &source_size);
+  if (!source) return CL_INVALID_PROGRAM;
+
+  cl_int err;
+  const char *sources[] = {source};
+  const size_t sizes[] = {source_size};
+  cl_program prog = clCreateProgramWithSource(context, 1, sources, sizes, &err);
+  free(source);
+  if (err != CL_SUCCESS) return err;
+
+  char options[128];
+  snprintf(options, sizeof(options), "-DTILE_ROWS=%uu -DTILE_COLS=%uu",
+           c.rows, c.cols);
+  err = clBuildProgram(prog, 1, &device, options, NULL, NULL);
+  if (err != CL_SUCCESS) {
+    ventus_print_build_log(prog, device);
+    clReleaseProgram(prog);
+    return err;
+  }
+
+  *program = prog;
+  return CL_SUCCESS;
+}
+
 static int run_child(PathKind kind, PipelineCase c, PathResult *result)
 {
   cl_int err = CL_SUCCESS;
@@ -378,13 +419,13 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
   uint64_t ns = 0;
   int exit_code = 1;
   size_t bytes = (size_t)elements * sizeof(float);
-  const char *source_path = getenv("VENTUS_TMA_ROUNDTRIP_SOURCE");
+  const char *source_path = getenv("VENTUS_DMA_TMA_G2S_PINGPONG_SOURCE");
   if (!source_path || !source_path[0]) {
-    source_path = "tma_roundtrip_pipeline_perf_test.cl";
+    source_path = "dma_tma_g2s_pingpong_perf_test.cl";
   }
 
   printf("CASE path=%s rows=%u cols=%u buffers=%u stages=%u elements=%u compute_iters=1 wg_size=%u single_wg=1\n",
-         path_name(kind), TILE_ROWS, TILE_COLS, c.buffers, c.stages,
+         path_name(kind), c.rows, c.cols, c.buffers, c.stages,
          elements, WG_SIZE);
 
   input = (float *)malloc(bytes);
@@ -402,8 +443,8 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
   queue = clCreateCommandQueue(context, device, CL_QUEUE_PROFILING_ENABLE,
                                &err);
   CHECK_OPENCL_ERROR_IN("clCreateCommandQueue(profiled)");
-  err = ventus_build_program_from_source(context, device, source_path, &program);
-  CHECK_OPENCL_ERROR_IN("ventus_build_program_from_source");
+  err = build_program_with_tile_options(context, device, source_path, c, &program);
+  CHECK_OPENCL_ERROR_IN("build_program_with_tile_options");
   setup_kernel = clCreateKernel(program, "setup_desc_kernel", &err);
   CHECK_OPENCL_ERROR_IN("clCreateKernel(setup_desc)");
   if (kind == PATH_TMA) {
@@ -412,7 +453,9 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
     tma_kernel = clCreateKernel(program, kernel_name, &err);
     CHECK_OPENCL_ERROR_IN("clCreateKernel(tma)");
   } else {
-    manual_kernel = clCreateKernel(program, "manual_roundtrip_pipeline_kernel", &err);
+    const char *kernel_name = manual_kernel_name(c);
+    if (!kernel_name) goto FINISH;
+    manual_kernel = clCreateKernel(program, kernel_name, &err);
     CHECK_OPENCL_ERROR_IN("clCreateKernel(manual)");
   }
 
@@ -450,7 +493,7 @@ static int run_child(PathKind kind, PipelineCase c, PathResult *result)
   result->seen = 1;
   printf("PATH_RESULT path=%s rows=%u cols=%u buffers=%u stages=%u elements=%u compute_iters=1 ns=%" PRIu64
          " elements_per_ns=%.6e\n",
-         path_name(kind), TILE_ROWS, TILE_COLS, c.buffers, c.stages,
+         path_name(kind), c.rows, c.cols, c.buffers, c.stages,
          elements, ns, result->elements_per_ns);
   printf("OK child path=%s buffers=%u stages=%u\n",
          path_name(kind), c.buffers, c.stages);
@@ -506,10 +549,12 @@ static int parse_path_result_line(const char *line, PathResult *result)
                       path, &rows, &cols, &buffers, &stages, &elements,
                       &compute_iters, &ns, &elements_per_ns);
   if (fields != 9) return 1;
-  if (rows != TILE_ROWS || cols != TILE_COLS || compute_iters != 1) return 1;
-  if (elements != TILE_WORDS * stages) return 1;
+  if (compute_iters != 1 || rows == 0 || cols == 0) return 1;
+  if (elements != rows * cols * stages) return 1;
   if (parse_path_kind(path, &kind) != 0) return 1;
   result->kind = kind;
+  result->c.rows = rows;
+  result->c.cols = cols;
   result->c.buffers = buffers;
   result->c.stages = stages;
   result->elements = elements;
@@ -530,18 +575,28 @@ static int make_absolute_path(char *out, size_t out_size, const char *cwd,
   return 0;
 }
 
+static int ensure_dir(const char *path)
+{
+  struct stat st;
+  if (mkdir(path, 0775) == 0) return 0;
+  if (errno == EEXIST && stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+    return 0;
+  }
+  return 1;
+}
+
 static void make_child_paths(ChildRun *child)
 {
   char stamp[32];
   make_timestamp(stamp, sizeof(stamp));
   snprintf(child->log_path, sizeof(child->log_path),
-           LOG_DIR "/tma_roundtrip_pipeline_perf_child_%s_%ld_%s_b%u_s%u.log",
+           LOG_DIR "/dma_tma_g2s_pingpong_perf_child_%s_%ld_%s_r%u_c%u_b%u_s%u.log",
            stamp, (long)getpid(), path_name(child->kind),
-           child->c.buffers, child->c.stages);
+           child->c.rows, child->c.cols, child->c.buffers, child->c.stages);
   snprintf(child->run_dir, sizeof(child->run_dir),
-           LOG_DIR "/tma_roundtrip_pipeline_perf_run_%s_%ld_%s_b%u_s%u",
+           LOG_DIR "/dma_tma_g2s_pingpong_perf_run_%s_%ld_%s_r%u_c%u_b%u_s%u",
            stamp, (long)getpid(), path_name(child->kind),
-           child->c.buffers, child->c.stages);
+           child->c.rows, child->c.cols, child->c.buffers, child->c.stages);
 }
 
 static int launch_child(const char *prog, PathKind kind, PipelineCase c,
@@ -552,6 +607,8 @@ static int launch_child(const char *prog, PathKind kind, PipelineCase c,
   char cwd[256];
   char exe_abs[512];
   char source_abs[512];
+  char rows_arg[16];
+  char cols_arg[16];
   char buffers_arg[16];
   char stages_arg[16];
 
@@ -561,14 +618,16 @@ static int launch_child(const char *prog, PathKind kind, PipelineCase c,
   if (!getcwd(cwd, sizeof(cwd))) return 1;
   if (make_absolute_path(exe_abs, sizeof(exe_abs), cwd, prog) != 0) return 1;
   snprintf(source_abs, sizeof(source_abs),
-           "%s/tma_roundtrip_pipeline_perf_test.cl", cwd);
-  mkdir(LOG_DIR, 0775);
+           "%s/dma_tma_g2s_pingpong_perf_test.cl", cwd);
+  if (ensure_dir(LOG_DIR) != 0) return 1;
   if (mkdir(child->run_dir, 0775) != 0) return 1;
   header = fopen(child->log_path, "w");
   if (!header) return 1;
-  fprintf(header, "# command: %s child %s %u %u\n",
-          prog, path_arg(kind), c.buffers, c.stages);
+  fprintf(header, "# command: %s child %s %u %u %u %u\n",
+          prog, path_arg(kind), c.rows, c.cols, c.buffers, c.stages);
   fclose(header);
+  snprintf(rows_arg, sizeof(rows_arg), "%u", c.rows);
+  snprintf(cols_arg, sizeof(cols_arg), "%u", c.cols);
   snprintf(buffers_arg, sizeof(buffers_arg), "%u", c.buffers);
   snprintf(stages_arg, sizeof(stages_arg), "%u", c.stages);
 
@@ -576,19 +635,20 @@ static int launch_child(const char *prog, PathKind kind, PipelineCase c,
   if (pid < 0) return 1;
   if (pid == 0) {
     FILE *out = fopen(child->log_path, "a");
-    setenv("VENTUS_TMA_ROUNDTRIP_SOURCE", source_abs, 1);
+    setenv("VENTUS_DMA_TMA_G2S_PINGPONG_SOURCE", source_abs, 1);
     if (out) {
       dup2(fileno(out), STDOUT_FILENO);
       dup2(fileno(out), STDERR_FILENO);
     }
     if (chdir(child->run_dir) != 0) _exit(127);
     execlp(exe_abs, exe_abs, "child", path_arg(kind),
-           buffers_arg, stages_arg, (char *)NULL);
+           rows_arg, cols_arg, buffers_arg, stages_arg, (char *)NULL);
     _exit(127);
   }
   child->pid = pid;
-  printf("ROUNDTRIP_CHILD_START path=%s pid=%ld buffers=%u stages=%u log=%s run_dir=%s\n",
-         path_name(kind), (long)pid, c.buffers, c.stages,
+  child->active = 1;
+  printf("PINGPONG_CHILD_START path=%s pid=%ld rows=%u cols=%u buffers=%u stages=%u log=%s run_dir=%s\n",
+         path_name(kind), (long)pid, c.rows, c.cols, c.buffers, c.stages,
          child->log_path, child->run_dir);
   fflush(stdout);
   return 0;
@@ -631,33 +691,90 @@ static int wait_child_and_parse(const ChildRun *child, PathResult *result)
   int status = 0;
   if (waitpid(child->pid, &status, 0) < 0) return 1;
   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    fprintf(stderr, "child failed path=%s buffers=%u stages=%u log=%s status=%d\n",
-            path_name(child->kind), child->c.buffers, child->c.stages,
-            child->log_path, status);
+    fprintf(stderr, "child failed path=%s rows=%u cols=%u buffers=%u stages=%u log=%s status=%d\n",
+            path_name(child->kind), child->c.rows, child->c.cols,
+            child->c.buffers, child->c.stages, child->log_path, status);
     return 1;
   }
   if (parse_child_log(child, result) != 0) {
     fprintf(stderr, "failed to parse child log %s\n", child->log_path);
     return 1;
   }
-  printf("ROUNDTRIP_CHILD_DONE path=%s buffers=%u stages=%u ns=%" PRIu64,
-         path_name(result->kind), result->c.buffers, result->c.stages,
-         result->ns);
+  printf("PINGPONG_CHILD_DONE path=%s rows=%u cols=%u buffers=%u stages=%u ns=%" PRIu64,
+         path_name(result->kind), result->c.rows, result->c.cols,
+         result->c.buffers, result->c.stages, result->ns);
   if (result->cycle_valid) printf(" cycles=%" PRIu64, result->cycles);
   printf("\n");
   return 0;
 }
 
+static void stop_children(ChildRun *children)
+{
+  for (uint32_t i = 0; i < PATH_COUNT; i++) {
+    if (children[i].active && children[i].pid > 0) kill(children[i].pid, SIGTERM);
+  }
+  for (uint32_t i = 0; i < PATH_COUNT; i++) {
+    if (children[i].active && children[i].pid > 0) {
+      waitpid(children[i].pid, NULL, 0);
+      children[i].active = 0;
+    }
+  }
+}
+
 static int run_pair(const char *prog, PipelineCase c, CaseResult *out)
 {
-  ChildRun manual_child;
-  ChildRun tma_child;
+  ChildRun children[PATH_COUNT];
+  uint32_t completed = 0;
+  memset(children, 0, sizeof(children));
   memset(out, 0, sizeof(*out));
   out->c = c;
-  if (launch_child(prog, PATH_MANUAL, c, &manual_child) != 0) return 1;
-  if (wait_child_and_parse(&manual_child, &out->manual) != 0) return 1;
-  if (launch_child(prog, PATH_TMA, c, &tma_child) != 0) return 1;
-  if (wait_child_and_parse(&tma_child, &out->tma) != 0) return 1;
+
+  if (launch_child(prog, PATH_MANUAL, c, &children[PATH_MANUAL]) != 0 ||
+      launch_child(prog, PATH_TMA, c, &children[PATH_TMA]) != 0) {
+    stop_children(children);
+    return 1;
+  }
+
+  while (completed < PATH_COUNT) {
+    int status = 0;
+    pid_t done = waitpid(-1, &status, 0);
+    if (done < 0) {
+      stop_children(children);
+      return 1;
+    }
+
+    uint32_t slot = 0;
+    while (slot < PATH_COUNT &&
+           (!children[slot].active || children[slot].pid != done)) {
+      slot++;
+    }
+    if (slot == PATH_COUNT) continue;
+
+    children[slot].active = 0;
+    completed++;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+      fprintf(stderr, "child failed path=%s rows=%u cols=%u buffers=%u stages=%u log=%s status=%d\n",
+              path_name(children[slot].kind), children[slot].c.rows,
+              children[slot].c.cols, children[slot].c.buffers,
+              children[slot].c.stages, children[slot].log_path, status);
+      stop_children(children);
+      return 1;
+    }
+
+    PathResult *target = children[slot].kind == PATH_TMA ? &out->tma : &out->manual;
+    if (parse_child_log(&children[slot], target) != 0) {
+      fprintf(stderr, "failed to parse child log %s\n", children[slot].log_path);
+      stop_children(children);
+      return 1;
+    }
+
+    printf("PINGPONG_CHILD_DONE path=%s rows=%u cols=%u buffers=%u stages=%u ns=%" PRIu64,
+           path_name(target->kind), target->c.rows, target->c.cols,
+           target->c.buffers, target->c.stages, target->ns);
+    if (target->cycle_valid) printf(" cycles=%" PRIu64, target->cycles);
+    printf("\n");
+  }
+
   return 0;
 }
 
@@ -682,14 +799,16 @@ static void print_result_row(FILE *f, const CaseResult *r)
   if (r->manual.cycle_valid && r->tma.cycle_valid) {
     cycle_speed = speedup_u64(r->manual.cycles, r->tma.cycles);
     cycle_improve = improvement_percent(cycle_speed);
-    fprintf(f, "| %u | %u | %u | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f |\n",
-            r->c.buffers, r->c.stages, r->manual.elements,
-            r->manual.cycles, r->tma.cycles, cycle_speed, cycle_improve,
-            r->manual.ns, r->tma.ns, ns_speed, ns_improve);
+    fprintf(f, "| %u | %u | %u | %u | %u | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f |\n",
+            r->c.rows, r->c.cols, r->c.buffers, r->c.stages,
+            r->manual.elements, r->manual.cycles, r->tma.cycles,
+            cycle_speed, cycle_improve, r->manual.ns, r->tma.ns,
+            ns_speed, ns_improve);
   } else {
-    fprintf(f, "| %u | %u | %u | NA | NA | NA | NA | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f |\n",
-            r->c.buffers, r->c.stages, r->manual.elements,
-            r->manual.ns, r->tma.ns, ns_speed, ns_improve);
+    fprintf(f, "| %u | %u | %u | %u | %u | NA | NA | NA | NA | %" PRIu64 " | %" PRIu64 " | %.4f | %.2f |\n",
+            r->c.rows, r->c.cols, r->c.buffers, r->c.stages,
+            r->manual.elements, r->manual.ns, r->tma.ns,
+            ns_speed, ns_improve);
   }
 }
 
@@ -701,22 +820,22 @@ static int write_report(const CaseResult *results, size_t count)
   const CaseResult *best = NULL;
   double best_speed = 0.0;
   make_timestamp(stamp, sizeof(stamp));
-  mkdir(LOG_DIR, 0775);
+  if (ensure_dir(LOG_DIR) != 0) return 1;
   snprintf(path, sizeof(path),
-           LOG_DIR "/tma_roundtrip_pipeline_perf_report_%s.md", stamp);
+           LOG_DIR "/dma_tma_g2s_pingpong_perf_report_%s.md", stamp);
   f = fopen(path, "w");
   if (!f) return 1;
-  fprintf(f, "# TMA Roundtrip Pipeline Performance Report\n\n");
-  fprintf(f, "- workload: 16x16 FP32 tiles, one work-group\n");
+  fprintf(f, "# TMA Ping-Pong Pipeline Performance Report\n\n");
+  fprintf(f, "- tile_sweep: %s FP32 tiles, one work-group\n", sweep_tile_text);
   fprintf(f, "- compute_iters: 1 fixed\n");
-  fprintf(f, "- buffer_sweep: 2, 3, 4, 6, 8 active shared-memory tile buffers\n");
-  fprintf(f, "- stage_sweep: 1, 2, 3, 4, 8 tiles per work-group\n");
+  fprintf(f, "- buffer_sweep: 2 active shared-memory tile buffers\n");
+  fprintf(f, "- stage_sweep: 1, 2, 4, 8, 16 tiles per work-group\n");
   fprintf(f, "- manual_path: global/L2 -> register -> shared -> compute -> register -> global\n");
   fprintf(f, "- tma_path: descriptor TMA G2S -> shared compute -> ordinary shared/register/global store\n");
   fprintf(f, "- primary_metric: GVM PMU active cycles when available; host ns is auxiliary\n\n");
-  fprintf(f, "ROUNDTRIP_SWEEP_TABLE_BEGIN\n");
-  fprintf(f, "| buffers | stages | elements | manual_cycles | tma_cycles | cycle_speedup | cycle_improvement_percent | manual_ns | tma_ns | ns_speedup | ns_improvement_percent |\n");
-  fprintf(f, "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+  fprintf(f, "PINGPONG_SWEEP_TABLE_BEGIN\n");
+  fprintf(f, "| rows | cols | buffers | stages | elements | manual_cycles | tma_cycles | cycle_speedup | cycle_improvement_percent | manual_ns | tma_ns | ns_speedup | ns_improvement_percent |\n");
+  fprintf(f, "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
   for (size_t i = 0; i < count; i++) {
     double speed = 0.0;
     print_result_row(f, &results[i]);
@@ -730,11 +849,11 @@ static int write_report(const CaseResult *results, size_t count)
       best_speed = speed;
     }
   }
-  fprintf(f, "ROUNDTRIP_SWEEP_TABLE_END\n\n");
+  fprintf(f, "PINGPONG_SWEEP_TABLE_END\n\n");
   if (best) {
-    fprintf(f, "BEST_ROUNDTRIP buffers=%u stages=%u speedup=%.4fx improvement_percent=%.2f\n",
-            best->c.buffers, best->c.stages, best_speed,
-            improvement_percent(best_speed));
+    fprintf(f, "BEST_PINGPONG rows=%u cols=%u buffers=%u stages=%u speedup=%.4fx improvement_percent=%.2f\n",
+            best->c.rows, best->c.cols, best->c.buffers, best->c.stages,
+            best_speed, improvement_percent(best_speed));
   }
   fclose(f);
   printf("REPORT %s\n", path);
@@ -744,16 +863,20 @@ static int write_report(const CaseResult *results, size_t count)
 static int run_single_or_sweep(const char *prog, int sweep,
                                PipelineCase single_case)
 {
-  CaseResult results[sizeof(sweep_buffers) / sizeof(sweep_buffers[0]) *
+  CaseResult results[sizeof(sweep_tiles) / sizeof(sweep_tiles[0]) *
+                     sizeof(sweep_buffers) / sizeof(sweep_buffers[0]) *
                      sizeof(sweep_stages) / sizeof(sweep_stages[0])];
   size_t count = 0;
   if (sweep) {
-    for (size_t bi = 0; bi < sizeof(sweep_buffers) / sizeof(sweep_buffers[0]); bi++) {
-      for (size_t si = 0; si < sizeof(sweep_stages) / sizeof(sweep_stages[0]); si++) {
-        PipelineCase c = {sweep_buffers[bi], sweep_stages[si]};
-        if (run_pair(prog, c, &results[count]) != 0) return 1;
-        print_result_row(stdout, &results[count]);
-        count++;
+    for (size_t ti = 0; ti < sizeof(sweep_tiles) / sizeof(sweep_tiles[0]); ti++) {
+      for (size_t bi = 0; bi < sizeof(sweep_buffers) / sizeof(sweep_buffers[0]); bi++) {
+        for (size_t si = 0; si < sizeof(sweep_stages) / sizeof(sweep_stages[0]); si++) {
+          PipelineCase c = {sweep_tiles[ti].rows, sweep_tiles[ti].cols,
+                            sweep_buffers[bi], sweep_stages[si]};
+          if (run_pair(prog, c, &results[count]) != 0) return 1;
+          print_result_row(stdout, &results[count]);
+          count++;
+        }
       }
     }
   } else {
@@ -770,35 +893,51 @@ static void usage(const char *prog)
           "Usage:\n"
           "  %s\n"
           "  %s sweep\n"
-          "  %s single <buffers> <stages>\n"
-          "  %s child manual|tma <buffers> <stages>\n",
-          prog, prog, prog, prog);
+          "  %s single <buffers> <stages>                 # default 16x16\n"
+          "  %s single <rows> <cols> <buffers> <stages>\n"
+          "  %s child manual|tma <rows> <cols> <buffers> <stages>\n",
+          prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
 {
-  PipelineCase c = {DEFAULT_BUFFERS, DEFAULT_STAGES};
+  PipelineCase c = {DEFAULT_TILE_ROWS, DEFAULT_TILE_COLS,
+                    DEFAULT_BUFFERS, DEFAULT_STAGES};
   if (argc == 1) {
     return run_single_or_sweep(argv[0], 1, c);
   }
   if (strcmp(argv[1], "sweep") == 0 && argc == 2) {
     return run_single_or_sweep(argv[0], 1, c);
   }
-  if (strcmp(argv[1], "single") == 0 && argc == 4) {
-    if (parse_u32(argv[2], 1, MAX_BUFFERS, "buffers", &c.buffers) ||
-        parse_u32(argv[3], 1, MAX_STAGES, "stages", &c.stages) ||
+  if (strcmp(argv[1], "single") == 0 && (argc == 4 || argc == 6)) {
+    int arg = 2;
+    if (argc == 6) {
+      if (parse_u32(argv[arg++], 1, MAX_TILE_ROWS, "rows", &c.rows) ||
+          parse_u32(argv[arg++], 1, MAX_TILE_COLS, "cols", &c.cols)) {
+        return 1;
+      }
+    }
+    if (parse_u32(argv[arg++], 1, MAX_BUFFERS, "buffers", &c.buffers) ||
+        parse_u32(argv[arg++], 1, MAX_STAGES, "stages", &c.stages) ||
         validate_case(c)) {
       return 1;
     }
     return run_single_or_sweep(argv[0], 0, c);
   }
-  if (strcmp(argv[1], "child") == 0 && argc == 5) {
+  if (strcmp(argv[1], "child") == 0 && (argc == 5 || argc == 7)) {
     PathKind kind;
     PathResult result;
+    int arg = 3;
     memset(&result, 0, sizeof(result));
-    if (parse_path_kind(argv[2], &kind) ||
-        parse_u32(argv[3], 1, MAX_BUFFERS, "buffers", &c.buffers) ||
-        parse_u32(argv[4], 1, MAX_STAGES, "stages", &c.stages) ||
+    if (parse_path_kind(argv[2], &kind)) return 1;
+    if (argc == 7) {
+      if (parse_u32(argv[arg++], 1, MAX_TILE_ROWS, "rows", &c.rows) ||
+          parse_u32(argv[arg++], 1, MAX_TILE_COLS, "cols", &c.cols)) {
+        return 1;
+      }
+    }
+    if (parse_u32(argv[arg++], 1, MAX_BUFFERS, "buffers", &c.buffers) ||
+        parse_u32(argv[arg++], 1, MAX_STAGES, "stages", &c.stages) ||
         validate_case(c)) {
       return 1;
     }

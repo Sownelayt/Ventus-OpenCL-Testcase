@@ -1,4 +1,4 @@
-liyb@dsplab-ubuntu:~/ventus-env-copilot-test/testcases/_get_case/tma_pingpong_pipeline_perf_test$ VENTUS_BACKEND=gvm ./tma_pingpong_pi
+liyb@dsplab-ubuntu:~/ventus-env-copilot-test/testcases/_get_case/dma_tma_g2s_pingpong_perf_test$ VENTUS_BACKEND=gvm ./tma_pingpong_pi
 peline_perf_test.out  sweep 
 PINGPONG_CHILD_START path=manual pid=158008 rows=16 cols=16 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230338_158007_manual_r16_c16_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230338_158007_manual_r16_c16_b2_s1
 PINGPONG_CHILD_START path=tma_pingpong_g2s_manual_store pid=158009 rows=16 cols=16 buffers=2 stages=1 log=tma_pingpong_pipeline_perf_logs/tma_pingpong_pipeline_perf_child_20260529_230338_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s1.log run_dir=tma_pingpong_pipeline_perf_run_20260529_230338_158007_tma_pingpong_g2s_manual_store_r16_c16_b2_s1

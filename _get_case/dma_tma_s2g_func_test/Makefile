@@ -4,9 +4,9 @@ CC = clang
 CFLAGS = -g -O2 -std=c11 -DCL_TARGET_OPENCL_VERSION=120 -I. -I../common -Wno-deprecated-declarations
 EXE = dma_tma_s2g_func_test.out
 SRC = dma_tma_s2g_func_test.c
-CASE_SRCS = s2g_bulk_matrix_case.c s2g_tensor_matrix_case.c
+CASE_SRCS = s2g_bulk_matrix_case.c s2g_tensor_matrix_case.c s2g_mixed_routing_case.c
 CASE_OBJS = $(CASE_SRCS:.c=.o)
-KERNELS = shared_to_global_dma_test.cl tensor_shared_to_global_test.cl
+KERNELS = shared_to_global_dma_test.cl tensor_shared_to_global_test.cl s2g_mixed_routing_test.cl
 
 .PHONY: all clean log
 all: log $(EXE)
