@@ -4,7 +4,7 @@
  * One common measured kernel keeps setup/timing/post-copy structure identical
  * and selects only the movement method with runtime path/pair arguments:
  *   manual G2S: global load -> register -> shared, until all lanes finish
- *   TMA/Bulk G2S: DMA issue -> wait_group completion
+ *   TMA/Bulk G2S: DMA issue -> shared mbarrier transaction completion
  *   manual S2G: shared load -> register -> global store, until all lanes finish
  *   TMA/Bulk S2G: DMA issue -> wait_group completion
  *   Tensor roundtrip: tensor G2S -> shared, then tensor/manual S2G -> global
@@ -12,6 +12,8 @@
  * Setup, local source initialization, tensor coordinate loading, and validation
  * copies are outside the timed window.
  */
+
+#include "../common/ventus_tma_v2_opencl.h"
 
 #define DESC_WORDS 32u
 #define COORD_WORDS 32u
@@ -90,70 +92,17 @@ copy_shared_to_output(__local uint *shared, __global uint *output, uint lid)
   }
 }
 
-#define DMA_COMMIT_GROUP() do {                                              \
-  __asm__ volatile(".word 0x00086042\n\t" ::: "memory");                  \
-} while (0)
+static __local uint *
+align_local_8(__local uint *base)
+{
+  return (__local uint *)(((uint)base + 7u) & ~7u);
+}
 
-#define DMA_WAIT_GROUP0_RAW() do {                                           \
-  __asm__ volatile(".word 0x000c6042\n\t" ::: "memory");                  \
-} while (0)
-
-#define LOAD_TENSOR_COORDS(COORDS) do {                                      \
-  uint coords_ptr = (uint)(COORDS);                                          \
-  __asm__ volatile(                                                          \
-    "vid.v v12\n\t"                                                        \
-    "vsll.vi v12, v12, 2\n\t"                                              \
-    "vadd.vx v12, v12, %[coords]\n\t"                                     \
-    "vlw12.v v12, 0(v12)\n\t"                                             \
-    :                                                                        \
-    : [coords] "r"(coords_ptr)                                              \
-    : "memory"                                                             \
-  );                                                                         \
-} while (0)
-
-#define ISSUE_BULK_G2S(DST, SRC, SIZE) do {                                  \
-  __asm__ volatile(                                                          \
-    ".insn r 0x42, 1, 0, %[dst], %[src], %[size]\n\t"                     \
-    :                                                                        \
-    : [dst] "r"(DST), [src] "r"(SRC), [size] "r"(SIZE)                 \
-    : "memory"                                                             \
-  );                                                                         \
-} while (0)
-
-#define ISSUE_BULK_S2G(DST, SRC, SIZE) do {                                  \
-  __asm__ volatile(                                                          \
-    ".insn r 0x42, 3, 0, %[dst], %[src], %[size]\n\t"                     \
-    :                                                                        \
-    : [dst] "r"(DST), [src] "r"(SRC), [size] "r"(SIZE)                 \
-    : "memory"                                                             \
-  );                                                                         \
-} while (0)
-
-#define ISSUE_TENSOR_G2S(DST, DESC) do {                                     \
-  uint smem = (uint)(DST);                                                   \
-  uint desc_ptr = (uint)(DESC);                                              \
-  __asm__ volatile(                                                          \
-    "mv x10, %[smem]\n\t"                                                  \
-    "mv x11, %[desc]\n\t"                                                  \
-    ".word 0x00C5A542\n\t"                                                 \
-    :                                                                        \
-    : [smem] "r"(smem), [desc] "r"(desc_ptr)                              \
-    : "x10", "x11", "memory"                                            \
-  );                                                                         \
-} while (0)
-
-#define ISSUE_TENSOR_S2G(SRC, DESC) do {                                     \
-  uint smem = (uint)(SRC);                                                   \
-  uint desc_ptr = (uint)(DESC);                                              \
-  __asm__ volatile(                                                          \
-    "mv x10, %[smem]\n\t"                                                  \
-    "mv x11, %[desc]\n\t"                                                  \
-    ".word 0x00C5C542\n\t"                                                 \
-    :                                                                        \
-    : [smem] "r"(smem), [desc] "r"(desc_ptr)                              \
-    : "x10", "x11", "memory"                                            \
-  );                                                                         \
-} while (0)
+static __local uint *
+align_local_128(__local uchar *base)
+{
+  return (__local uint *)(((uint)base + 127u) & ~127u);
+}
 
 kernel void
 movement_profile_kernel(__global uint *desc,
@@ -165,7 +114,10 @@ movement_profile_kernel(__global uint *desc,
                         uint pair_kind,
                         uint use_dma)
 {
-  __local uint shared[TILE_WORDS];
+  __local uchar shared_raw[TILE_BYTES + 128u];
+  __local uint *shared = align_local_128(shared_raw);
+  __local uint barrier_raw[2];
+  __local uint *mbarrier = align_local_8(barrier_raw);
   __local uint t0;
   __local uint t1;
   uint lid = get_local_id(0);
@@ -182,7 +134,17 @@ movement_profile_kernel(__global uint *desc,
     fill_shared_pattern(shared, lid);
   }
   if (is_tensor_pair) {
-    LOAD_TENSOR_COORDS(coords);
+    VENTUS_TMA_LOAD_COORDS_V12(coords);
+  }
+  if (use_dma && lid == 0u &&
+      (pair_kind == PAIR_BULK_G2S ||
+       pair_kind == PAIR_TENSOR_G2S ||
+       pair_kind == PAIR_TENSOR_G2S_S2G)) {
+    VENTUS_TMA_MBARRIER_INIT(mbarrier, 1u);
+    VENTUS_TMA_MBARRIER_ARRIVE_EXPECT_TX(mbarrier, TILE_BYTES);
+  }
+  if (use_dma && lid == 0u && is_s2g) {
+    VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();
   }
 
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -192,9 +154,9 @@ movement_profile_kernel(__global uint *desc,
   if (pair_kind == PAIR_BULK_G2S) {
     if (use_dma) {
       if (lid == 0u) {
-        ISSUE_BULK_G2S((uint)shared, (uint)input, TILE_BYTES);
-        DMA_COMMIT_GROUP();
-        DMA_WAIT_GROUP0_RAW();
+        VENTUS_TMA_BULK_G2S(shared, input, TILE_BYTES);
+        VENTUS_TMA_MBARRIER_WAIT(mbarrier, 0u);
+        VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();
       }
     } else {
       volatile __global const uint *vin = (volatile __global const uint *)input;
@@ -205,9 +167,9 @@ movement_profile_kernel(__global uint *desc,
   } else if (pair_kind == PAIR_TENSOR_G2S) {
     if (use_dma) {
       if (lid == 0u) {
-        ISSUE_TENSOR_G2S(shared, desc);
-        DMA_COMMIT_GROUP();
-        DMA_WAIT_GROUP0_RAW();
+        VENTUS_TMA_TENSOR_G2S(shared, desc);
+        VENTUS_TMA_MBARRIER_WAIT(mbarrier, 0u);
+        VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();
       }
     } else {
       volatile __global const uint *vin = (volatile __global const uint *)input;
@@ -218,9 +180,9 @@ movement_profile_kernel(__global uint *desc,
   } else if (pair_kind == PAIR_BULK_S2G) {
     if (use_dma) {
       if (lid == 0u) {
-        ISSUE_BULK_S2G((uint)output, (uint)shared, TILE_BYTES);
-        DMA_COMMIT_GROUP();
-        DMA_WAIT_GROUP0_RAW();
+        VENTUS_TMA_BULK_S2G(output, shared, TILE_BYTES);
+        VENTUS_TMA_S2G_COMMIT_GROUP();
+        VENTUS_TMA_S2G_WAIT_GROUP0();
       }
     } else {
       volatile __global uint *vout = (volatile __global uint *)output;
@@ -231,9 +193,9 @@ movement_profile_kernel(__global uint *desc,
   } else if (pair_kind == PAIR_TENSOR_S2G) {
     if (use_dma) {
       if (lid == 0u) {
-        ISSUE_TENSOR_S2G(shared, desc);
-        DMA_COMMIT_GROUP();
-        DMA_WAIT_GROUP0_RAW();
+        VENTUS_TMA_TENSOR_S2G(shared, desc);
+        VENTUS_TMA_S2G_COMMIT_GROUP();
+        VENTUS_TMA_S2G_WAIT_GROUP0();
       }
     } else {
       volatile __global uint *vout = (volatile __global uint *)output;
@@ -244,17 +206,17 @@ movement_profile_kernel(__global uint *desc,
   } else if (pair_kind == PAIR_TENSOR_G2S_S2G) {
     if (use_dma) {
       if (lid == 0u) {
-        ISSUE_TENSOR_G2S(shared, desc);
-        DMA_COMMIT_GROUP();
-        DMA_WAIT_GROUP0_RAW();
+        VENTUS_TMA_TENSOR_G2S(shared, desc);
+        VENTUS_TMA_MBARRIER_WAIT(mbarrier, 0u);
+        VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();
       }
       barrier(CLK_LOCAL_MEM_FENCE);
       if (lid == 0u) t1 = read_cycle_lo();
       barrier(CLK_LOCAL_MEM_FENCE);
       if (lid == 0u) {
-        ISSUE_TENSOR_S2G(shared, desc + DESC_WORDS);
-        DMA_COMMIT_GROUP();
-        DMA_WAIT_GROUP0_RAW();
+        VENTUS_TMA_TENSOR_S2G(shared, desc + DESC_WORDS);
+        VENTUS_TMA_S2G_COMMIT_GROUP();
+        VENTUS_TMA_S2G_WAIT_GROUP0();
       }
     } else {
       volatile __global const uint *vin = (volatile __global const uint *)input;
@@ -280,6 +242,7 @@ movement_profile_kernel(__global uint *desc,
       cycles[2] = t2 - t1;
       cycles[3] = 0u;
     }
+    VENTUS_TMA_STATUS_READ(cycles[2]);
   }
 
   if (is_g2s_only) {

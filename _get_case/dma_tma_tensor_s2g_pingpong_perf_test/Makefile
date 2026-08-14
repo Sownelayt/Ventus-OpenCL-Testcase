@@ -8,7 +8,7 @@ SRC = dma_tma_tensor_s2g_pingpong_perf_test.c
 .PHONY: all clean
 all: $(EXE)
 
-$(EXE): $(SRC) dma_tma_tensor_s2g_pingpong_perf_test.cl ../common/ventus_opencl_test.h
+$(EXE): $(SRC) dma_tma_tensor_s2g_pingpong_perf_test.cl ../common/ventus_opencl_test.h ../common/ventus_tma_v2_opencl.h
 	$(CC) $(CFLAGS) $(SRC) -o $(EXE) -I$(OPENCL_INC) -L$(OPENCL_LIB) -lOpenCL -Wno-unused-result
 
 clean:

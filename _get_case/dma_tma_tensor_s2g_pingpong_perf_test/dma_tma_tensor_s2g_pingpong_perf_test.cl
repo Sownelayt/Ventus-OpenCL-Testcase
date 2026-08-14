@@ -11,8 +11,12 @@
  * shared output buffers without draining all outstanding S2G writes.
  */
 
+#include "ventus_tma_v2_opencl.h"
+
 #define DESC_WORDS 32u
-#define COORD_WORDS 32u
+#define COORD_VECTOR_WORDS 32u
+#define COORD_PHASE_WORD 36u
+#define COORD_WORDS 40u
 #ifndef TILE_ROWS
 #define TILE_ROWS 16u
 #endif
@@ -64,7 +68,7 @@ compute_tile(__local uint *src, __local uint *dst, uint lid)
 static void
 set_stage_coords(__local uint *coords, uint stage, uint lid)
 {
-  for (uint i = lid; i < COORD_WORDS; i += WG_SIZE) {
+  for (uint i = lid; i < COORD_VECTOR_WORDS; i += WG_SIZE) {
     coords[i] = 0u;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -75,49 +79,39 @@ set_stage_coords(__local uint *coords, uint stage, uint lid)
   barrier(CLK_LOCAL_MEM_FENCE);
 }
 
-#define ISSUE_TMA_G2S_BUF(BUF, DESC, COORDS) do {                         \
-  uint tma_smem = (uint)(BUF);                                             \
-  uint tma_desc = (uint)(DESC);                                             \
-  uint tma_coords = (uint)(COORDS);                                         \
-  __asm__ volatile(                                                         \
-    "vid.v v12\n\t"                                                       \
-    "vsll.vi v12, v12, 2\n\t"                                             \
-    "vadd.vx v12, v12, %[coords]\n\t"                                     \
-    "vlw12.v v12, 0(v12)\n\t"                                             \
-    "mv x10, %[smem]\n\t"                                                 \
-    "mv x11, %[desc]\n\t"                                                 \
-    ".word 0x00C5A542\n\t"                                                \
-    :                                                                       \
-    : [smem] "r"(tma_smem), [desc] "r"(tma_desc),                         \
-      [coords] "r"(tma_coords)                                             \
-    : "x10", "x11", "memory"                                             \
-  );                                                                        \
+static __local uint *
+align_local_8(__local uint *base)
+{
+  return (__local uint *)(((uint)base + 7u) & ~7u);
+}
+
+static __local uint *
+align_local_128(__local uint *base)
+{
+  return (__local uint *)(((uint)base + 127u) & ~127u);
+}
+
+#define ISSUE_TMA_G2S_BUF(BUF, DESC, COORDS) do {                           \
+  VENTUS_TMA_LOAD_COORDS_V12((COORDS));                                      \
+  if (lid == 0u) {                                                           \
+    __local uint *issue_mbarrier =                                           \
+      align_local_8((COORDS) + COORD_VECTOR_WORDS);                          \
+    if ((COORDS)[1] == 0u) {                                                 \
+      VENTUS_TMA_MBARRIER_INIT(issue_mbarrier, 1u);                          \
+    }                                                                        \
+    (COORDS)[COORD_PHASE_WORD] = ((COORDS)[1] / TILE_ROWS) & 1u;             \
+    VENTUS_TMA_MBARRIER_ARRIVE_EXPECT_TX(issue_mbarrier, TILE_WORDS * 4u);   \
+    VENTUS_TMA_TENSOR_G2S((BUF), (DESC));                                    \
+  }                                                                          \
 } while (0)
 
 #define ISSUE_TENSOR_S2G_BUF(BUF, DESC, COORDS, STAGE, LID, BASE) do {      \
   barrier(CLK_LOCAL_MEM_FENCE);                                             \
   set_stage_coords((COORDS), (STAGE), (LID));                               \
-  uint tensor_coords = (uint)(COORDS);                                      \
-  __asm__ volatile(                                                         \
-    "vid.v v12\n\t"                                                       \
-    "vsll.vi v12, v12, 2\n\t"                                             \
-    "vadd.vx v12, v12, %[coords]\n\t"                                     \
-    "vlw12.v v12, 0(v12)\n\t"                                             \
-    :                                                                       \
-    : [coords] "r"(tensor_coords)                                          \
-    : "memory"                                                             \
-  );                                                                        \
+  VENTUS_TMA_LOAD_COORDS_V12((COORDS));                                     \
   if ((LID) == 0u) {                                                        \
-    uint tensor_smem = (uint)(BUF);                                         \
-    uint tensor_desc = (uint)(DESC);                                        \
-    __asm__ volatile(                                                       \
-      "mv x10, %[smem]\n\t"                                               \
-      "mv x11, %[desc]\n\t"                                               \
-      ".word 0x00C5C542\n\t"                                              \
-      :                                                                     \
-      : [smem] "r"(tensor_smem), [desc] "r"(tensor_desc)                 \
-      : "x10", "x11", "memory"                                         \
-    );                                                                      \
+    VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();                                  \
+    VENTUS_TMA_TENSOR_S2G((BUF), (DESC));                                   \
   }                                                                         \
   barrier(CLK_LOCAL_MEM_FENCE);                                             \
 } while (0)
@@ -132,9 +126,15 @@ store_tile_global(__local uint *src, volatile __global uint *output,
   }
 }
 
-#define TMA_WAIT_ALL() do {                                                  \
-  __asm__ volatile(".word 0x00006042\n\t" ::: "memory");                  \
-  barrier(CLK_LOCAL_MEM_FENCE);                                              \
+#define TMA_WAIT_ALL() do {                                                   \
+  if (lid == 0u) {                                                            \
+    __local uint *wait_mbarrier =                                             \
+      align_local_8(coords + COORD_VECTOR_WORDS);                             \
+    uint wait_phase = coords[COORD_PHASE_WORD];                               \
+    VENTUS_TMA_MBARRIER_WAIT(wait_mbarrier, wait_phase);                      \
+    VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();                                    \
+  }                                                                           \
+  barrier(CLK_LOCAL_MEM_FENCE);                                               \
 } while (0)
 
 kernel void
@@ -323,65 +323,50 @@ manual_pingpong_b2_s16_kernel(__global const uint *input,
 #define ISSUE_TILE_S2G_CONST(SRC, OUTPUT, STAGE, LID) do {                  \
   barrier(CLK_LOCAL_MEM_FENCE);                                             \
   if ((LID) == 0u) {                                                        \
-    uint s2g_src_addr = (uint)(SRC);                                        \
     uint s2g_dst_addr = (uint)(OUTPUT) + ((uint)(STAGE) * TILE_WORDS * 4u); \
-    uint s2g_size_bytes = TILE_WORDS * 4u;                                  \
-    __asm__ volatile(                                                       \
-      "mv   x10, %[src]\n\t"                                             \
-      "mv   x11, %[dst]\n\t"                                             \
-      "mv   x12, %[size]\n\t"                                            \
-      ".word 0x00c535c2\n\t"                                             \
-      :                                                                     \
-      : [src] "r"(s2g_src_addr), [dst] "r"(s2g_dst_addr),                \
-        [size] "r"(s2g_size_bytes)                                        \
-      : "x10", "x11", "x12", "memory");                              \
+    VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();                                  \
+    VENTUS_TMA_BULK_S2G(s2g_dst_addr, (SRC), TILE_WORDS * 4u);              \
   }                                                                         \
   barrier(CLK_LOCAL_MEM_FENCE);                                             \
 } while (0)
 
 #define S2G_WAIT_ALL(LID) do {                                               \
   if ((LID) == 0u) {                                                        \
-    __asm__ volatile(".word 0x00006042\n\t" ::: "memory");                \
-  }                                                                         \
-  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);                      \
-} while (0)
-
-#define S2G_WAIT_OLDEST1(LID) do {                                           \
-  if ((LID) == 0u) {                                                        \
-    __asm__ volatile(".word 0x0000e042\n\t" ::: "memory");                \
+    VENTUS_TMA_S2G_WAIT_GROUP0();                                           \
   }                                                                         \
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);                      \
 } while (0)
 
 #define S2G_COMMIT_GROUP(LID) do {                                           \
   if ((LID) == 0u) {                                                        \
-    __asm__ volatile(".word 0x00086042\n\t" ::: "memory");                \
+    VENTUS_TMA_S2G_COMMIT_GROUP();                                          \
   }                                                                         \
 } while (0)
 
 #define S2G_WAIT_GROUP2(LID) do {                                            \
   if ((LID) == 0u) {                                                        \
-    __asm__ volatile(".word 0x000d6042\n\t" ::: "memory");                \
+    VENTUS_TMA_S2G_WAIT_GROUP2();                                           \
   }                                                                         \
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);                      \
 } while (0)
 
 #define S2G_WAIT_GROUP0(LID) do {                                            \
   if ((LID) == 0u) {                                                        \
-    __asm__ volatile(".word 0x000c6042\n\t" ::: "memory");                \
+    VENTUS_TMA_S2G_WAIT_GROUP0();                                           \
   }                                                                         \
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);                      \
 } while (0)
 
 #define S2G_WAIT_GROUP1(LID) do {                                            \
   if ((LID) == 0u) {                                                        \
-    __asm__ volatile(".word 0x000ce042\n\t" ::: "memory");                \
+    VENTUS_TMA_S2G_WAIT_GROUP1();                                           \
   }                                                                         \
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);                      \
 } while (0)
 
 #define STORE_TILE_S2G_CONST(SRC, OUTPUT, STAGE, LID) do {                  \
   ISSUE_TILE_S2G_CONST((SRC), (OUTPUT), (STAGE), (LID));                    \
+  S2G_COMMIT_GROUP((LID));                                                  \
   S2G_WAIT_ALL((LID));                                                      \
 } while (0)
 
@@ -514,6 +499,15 @@ manual_s2g_b2_s16_kernel(__global const uint *input,
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE((BUF), (STAGE));                        \
 } while (0)
 
+#define PREPARE_S2G_DESCRIPTOR(DESC, OUTPUT, LID) do {                       \
+  if ((LID) == 0u) {                                                        \
+    (DESC)[2] = (uint)(OUTPUT);                                             \
+    __asm__ volatile("fence rw, rw" ::: "memory");                         \
+    VENTUS_TMA_INVALIDATE_TENSORMAP((DESC));                                \
+  }                                                                         \
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);                      \
+} while (0)
+
 kernel void
 manual_tensor_s2g_b2_s1_kernel(__global const uint *input,
                                __global uint *output,
@@ -521,12 +515,13 @@ manual_tensor_s2g_b2_s1_kernel(__global const uint *input,
                                uint buffers,
                                uint stages)
 {
-  __local uint out0[TILE_WORDS];
+  __local uint out0_raw[TILE_WORDS + 32u];
+  __local uint *out0 = align_local_128(out0_raw);
   __local uint coords[COORD_WORDS];
   volatile __global const uint *vin = (volatile __global const uint *)input;
   uint lid = get_local_id(0);
-  (void)output;
   if (buffers != 2u || stages != 1u) return;
+  PREPARE_S2G_DESCRIPTOR(s2g_desc, output, lid);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out0, 0u);
   S2G_WAIT_ALL(lid);
 }
@@ -538,13 +533,15 @@ manual_tensor_s2g_b2_s2_kernel(__global const uint *input,
                                uint buffers,
                                uint stages)
 {
-  __local uint out0[TILE_WORDS];
-  __local uint out1[TILE_WORDS];
+  __local uint out0_raw[TILE_WORDS + 32u];
+  __local uint out1_raw[TILE_WORDS + 32u];
+  __local uint *out0 = align_local_128(out0_raw);
+  __local uint *out1 = align_local_128(out1_raw);
   __local uint coords[COORD_WORDS];
   volatile __global const uint *vin = (volatile __global const uint *)input;
   uint lid = get_local_id(0);
-  (void)output;
   if (buffers != 2u || stages != 2u) return;
+  PREPARE_S2G_DESCRIPTOR(s2g_desc, output, lid);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out0, 0u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out1, 1u);
   S2G_WAIT_ALL(lid);
@@ -557,14 +554,17 @@ manual_tensor_s2g_b2_s4_kernel(__global const uint *input,
                                uint buffers,
                                uint stages)
 {
-  __local uint out0[TILE_WORDS];
-  __local uint out1[TILE_WORDS];
-  __local uint out2[TILE_WORDS];
+  __local uint out0_raw[TILE_WORDS + 32u];
+  __local uint out1_raw[TILE_WORDS + 32u];
+  __local uint out2_raw[TILE_WORDS + 32u];
+  __local uint *out0 = align_local_128(out0_raw);
+  __local uint *out1 = align_local_128(out1_raw);
+  __local uint *out2 = align_local_128(out2_raw);
   __local uint coords[COORD_WORDS];
   volatile __global const uint *vin = (volatile __global const uint *)input;
   uint lid = get_local_id(0);
-  (void)output;
   if (buffers != 2u || stages != 4u) return;
+  PREPARE_S2G_DESCRIPTOR(s2g_desc, output, lid);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out0, 0u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out1, 1u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out2, 2u);
@@ -579,14 +579,17 @@ manual_tensor_s2g_b2_s8_kernel(__global const uint *input,
                                uint buffers,
                                uint stages)
 {
-  __local uint out0[TILE_WORDS];
-  __local uint out1[TILE_WORDS];
-  __local uint out2[TILE_WORDS];
+  __local uint out0_raw[TILE_WORDS + 32u];
+  __local uint out1_raw[TILE_WORDS + 32u];
+  __local uint out2_raw[TILE_WORDS + 32u];
+  __local uint *out0 = align_local_128(out0_raw);
+  __local uint *out1 = align_local_128(out1_raw);
+  __local uint *out2 = align_local_128(out2_raw);
   __local uint coords[COORD_WORDS];
   volatile __global const uint *vin = (volatile __global const uint *)input;
   uint lid = get_local_id(0);
-  (void)output;
   if (buffers != 2u || stages != 8u) return;
+  PREPARE_S2G_DESCRIPTOR(s2g_desc, output, lid);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out0, 0u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out1, 1u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out2, 2u);
@@ -605,14 +608,17 @@ manual_tensor_s2g_b2_s16_kernel(__global const uint *input,
                                 uint buffers,
                                 uint stages)
 {
-  __local uint out0[TILE_WORDS];
-  __local uint out1[TILE_WORDS];
-  __local uint out2[TILE_WORDS];
+  __local uint out0_raw[TILE_WORDS + 32u];
+  __local uint out1_raw[TILE_WORDS + 32u];
+  __local uint out2_raw[TILE_WORDS + 32u];
+  __local uint *out0 = align_local_128(out0_raw);
+  __local uint *out1 = align_local_128(out1_raw);
+  __local uint *out2 = align_local_128(out2_raw);
   __local uint coords[COORD_WORDS];
   volatile __global const uint *vin = (volatile __global const uint *)input;
   uint lid = get_local_id(0);
-  (void)output;
   if (buffers != 2u || stages != 16u) return;
+  PREPARE_S2G_DESCRIPTOR(s2g_desc, output, lid);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out0, 0u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out1, 1u);
   RUN_MANUAL_TENSOR_S2G_DELAY_STAGE(out2, 2u);
@@ -759,22 +765,22 @@ tma_s2g_b2_s16_kernel(__global uint *g2s_desc,
 #define RUN_TMA_TENSOR_S2G_PRELOAD_STORE_NO_S2G_WAIT(NEXT_STAGE, NEXT_BUF, CUR_BUF, STORE_STAGE) do { \
   set_stage_coords(coords, (NEXT_STAGE), lid);                              \
   ISSUE_TMA_G2S_BUF((NEXT_BUF), g2s_desc, coords);                          \
-  S2G_COMMIT_GROUP(lid);                                                     \
   compute_tile((CUR_BUF), (CUR_BUF), lid);                                  \
   ISSUE_TENSOR_S2G_BUF((CUR_BUF), s2g_desc, coords, (STORE_STAGE), lid, output); \
   S2G_COMMIT_GROUP(lid);                                                    \
   S2G_WAIT_GROUP1(lid);                                                     \
+  TMA_WAIT_ALL();                                                           \
 } while (0)
 
 #define RUN_TMA_TENSOR_S2G_PRELOAD_STORE_AFTER_WAIT(NEXT_STAGE, NEXT_BUF, CUR_BUF, STORE_STAGE) do { \
   S2G_WAIT_GROUP1(lid);                                                     \
   set_stage_coords(coords, (NEXT_STAGE), lid);                              \
   ISSUE_TMA_G2S_BUF((NEXT_BUF), g2s_desc, coords);                          \
-  S2G_COMMIT_GROUP(lid);                                                     \
   compute_tile((CUR_BUF), (CUR_BUF), lid);                                  \
   ISSUE_TENSOR_S2G_BUF((CUR_BUF), s2g_desc, coords, (STORE_STAGE), lid, output); \
   S2G_COMMIT_GROUP(lid);                                                    \
   S2G_WAIT_GROUP1(lid);                                                     \
+  TMA_WAIT_ALL();                                                           \
 } while (0)
 
 #define RUN_TMA_TENSOR_S2G_STORE_FINAL_NO_S2G_WAIT(CUR_BUF, STORE_STAGE) do { \

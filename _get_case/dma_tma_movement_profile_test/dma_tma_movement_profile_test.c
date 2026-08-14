@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,7 @@ typedef struct {
   uint64_t g2s_cycles;
   uint64_t s2g_cycles;
   uint64_t tail_cycles;
+  uint32_t tma_status;
   uint64_t active_cycles;
   uint64_t total_issued;
   uint64_t data_dep_stall;
@@ -319,26 +321,21 @@ static uint32_t case_bytes(MoveCase c)
 
 static uint32_t desc_control(unsigned data_type, unsigned rank)
 {
-  return (data_type & 0xfu) | ((rank & 0xfu) << 4);
+  return (data_type & 0x1fu) | ((rank & 0x7u) << 5);
 }
 
 static void build_desc(uint32_t *desc, MoveCase c)
 {
   memset(desc, 0, DESC_WORDS * sizeof(uint32_t));
-  desc[0] = 0x56544d41u;
-  desc[1] = desc_control(6u, 2u);
-  desc[2] = 0;
-  desc[3] = 128u;
+  desc[0] = 0x544d4103u;
+  desc[1] = desc_control(7u, 2u);
   desc[4] = c.cols;
   desc[5] = c.rows;
-  desc[6] = desc[7] = desc[8] = 1u;
-  desc[9] = sizeof(uint32_t);
-  desc[10] = c.cols * sizeof(uint32_t);
-  desc[11] = desc[12] = desc[13] = 0u;
-  desc[14] = c.cols;
-  desc[15] = c.rows;
-  desc[16] = desc[17] = desc[18] = 1u;
-  for (uint32_t i = 0; i < 5u; i++) desc[19u + i] = 1u;
+  desc[9] = c.cols * sizeof(uint32_t);
+  desc[17] = c.cols;
+  desc[18] = c.rows;
+  desc[22] = 1u;
+  desc[23] = 1u;
 }
 
 static uint32_t pattern_word(uint32_t idx)
@@ -414,9 +411,15 @@ static cl_int build_program_with_options(cl_context context,
   free(source);
   if (err != CL_SUCCESS) return err;
 
-  char options[160];
+  char source_dir[PATH_MAX];
+  snprintf(source_dir, sizeof(source_dir), "%s", source_path);
+  char *slash = strrchr(source_dir, '/');
+  if (slash) *slash = '\0';
+  else snprintf(source_dir, sizeof(source_dir), ".");
+  char options[PATH_MAX + 160];
   snprintf(options, sizeof(options),
-           "-DTILE_ROWS=%u -DTILE_COLS=%u", c.rows, c.cols);
+           "-I%s/../common -DTILE_ROWS=%u -DTILE_COLS=%u",
+           source_dir, c.rows, c.cols);
   err = clBuildProgram(prog, 1, &device, options, NULL, NULL);
   if (err != CL_SUCCESS) {
     ventus_print_build_log(prog, device);
@@ -462,11 +465,11 @@ static int run_measured_kernel(cl_command_queue queue,
                                PathKind path,
                                PairKind pair,
                                uint64_t *ns,
-                               uint32_t cycles[4])
+                               uint32_t cycles[5])
 {
   cl_int err = CL_SUCCESS;
   cl_event event = NULL;
-  uint32_t zero_cycles[4] = {0, 0, 0, 0};
+  uint32_t zero_cycles[5] = {0, 0, 0, 0, 0};
   size_t global = WG_SIZE;
   size_t local = WG_SIZE;
   err = clEnqueueWriteBuffer(queue, cycles_buf, CL_TRUE, 0,
@@ -530,8 +533,8 @@ static int run_child(PairKind pair, PathKind path, MoveCase c, const char *sourc
   uint32_t *got = NULL;
   uint32_t desc[DESC_WORDS * DESC_SETS];
   uint32_t coords[COORD_WORDS];
-  uint32_t cycles[4] = {0, 0, 0, 0};
-  uint32_t cycle_init[4] = {0, 0, 0, 0};
+  uint32_t cycles[5] = {0, 0, 0, 0, 0};
+  uint32_t cycle_init[5] = {0, 0, 0, 0, 0};
   uint32_t words = case_words(c);
   uint32_t bytes = case_bytes(c);
   uint64_t ns = 0;
@@ -599,9 +602,14 @@ static int run_child(PairKind pair, PathKind path, MoveCase c, const char *sourc
     fprintf(stderr, "FAIL %s movement cycle counter returned zero\n", path_arg(path));
     goto FINISH;
   }
+  if (cycles[4] != 0u) {
+    fprintf(stderr, "FAIL %s TMA status=0x%x\n", path_arg(path), cycles[4]);
+    goto FINISH;
+  }
 
-  printf("MOVE_RESULT path=%s rows=%u cols=%u bytes=%u cycles=%u ns=%" PRIu64,
-         path_arg(path), c.rows, c.cols, bytes, cycles[0], ns);
+  printf("MOVE_RESULT path=%s rows=%u cols=%u bytes=%u cycles=%u ns=%" PRIu64
+         " status=0x%x",
+         path_arg(path), c.rows, c.cols, bytes, cycles[0], ns, cycles[4]);
   if (cycles[1] || cycles[2] || cycles[3]) {
     printf(" g2s_cycles=%u s2g_cycles=%u tail_cycles=%u",
            cycles[1], cycles[2], cycles[3]);
@@ -707,6 +715,7 @@ static int parse_move_result_line(const char *line, MoveResult *result)
   unsigned g2s_cycles = 0;
   unsigned s2g_cycles = 0;
   unsigned tail_cycles = 0;
+  unsigned tma_status = 0;
   unsigned long long ns = 0;
   PathKind path;
   if (sscanf(line,
@@ -722,6 +731,9 @@ static int parse_move_result_line(const char *line, MoveResult *result)
   result->cycles = cycles;
   result->cycle_valid = cycles != 0u;
   result->ns = (uint64_t)ns;
+  const char *status_text = strstr(line, "status=");
+  if (status_text) sscanf(status_text, "status=%x", &tma_status);
+  result->tma_status = tma_status;
   const char *seg = strstr(line, "g2s_cycles=");
   if (seg && sscanf(seg, "g2s_cycles=%u s2g_cycles=%u tail_cycles=%u",
                     &g2s_cycles, &s2g_cycles, &tail_cycles) == 3) {

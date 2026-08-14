@@ -1,0 +1,11 @@
+*.out
+*.o
+*.log
+object*.cl
+object*.dump
+object*.riscv
+object*.riscv.log
+object*.vmem
+*.data
+*.metadata
+*.linkinfo

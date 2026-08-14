@@ -12,7 +12,8 @@ all: log $(EXE)
 log:
 	mkdir -p log
 
-$(EXE): $(SRC) $(KERNEL) ../common/ventus_opencl_test.h
+$(EXE): $(SRC) $(KERNEL) ../common/ventus_opencl_test.h \
+	../common/ventus_tma_v2_opencl.h
 	$(CC) $(CFLAGS) $(SRC) -o $(EXE) -I$(OPENCL_INC) -L$(OPENCL_LIB) -lOpenCL -Wno-unused-result
 
 clean:

@@ -91,11 +91,9 @@ Common suites:
   perf-full  Full sweeps from retained pingpong/profile projects.
   profile    Diagnostic profile projects such as DMA/TMA movement microbench.
   prefetch   PREFETCH_TENSORMAP coverage in tma_descriptor_test.
-  fence      CP_ASYNC_FENCE coverage in descriptor/bulk fence tests.
   matrix     tma_matrix_test only.
   bulk       bulk DMA matrix only.
   routing    shared-response routing conflict tests only.
-  legacy     older one-off cases registered outside the default directed suite.
 
 Examples:
   ./run_dma_tma_rtl.sh --suite prefetch --backend gvm
@@ -275,7 +273,7 @@ if [[ "$RUN_JOBS" -lt 1 || "$RUN_JOBS" -gt 4 ]]; then
 fi
 
 # If the user names explicit cases without suite/tag filters, do not keep the
-# default directed suite filter. This makes legacy one-off runs ergonomic.
+# default directed suite filter.
 if [[ $CASE_SPECIFIED -eq 1 && $SUITE_SPECIFIED -eq 0 && $TAG_SPECIFIED -eq 0 ]]; then
   SUITES=(all)
 fi
@@ -304,7 +302,7 @@ while IFS=, read -r dir exe run_cmd check_mode suites tags backends run_label re
   run_label=${run_label//$'\r'/}
 
   [[ -z "$dir" || "$dir" == "dir" || "$dir" == \#* ]] && continue
-  [[ -n "$suites" ]] || suites=legacy
+  [[ -n "$suites" ]] || suites=untagged
   [[ -n "$tags" ]] || tags=untagged
   [[ -n "$backends" ]] || backends=spike\|gvm
 

@@ -31,6 +31,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -261,7 +262,7 @@ static int validate_case(PipelineCase c)
 
 static uint32_t desc_control(unsigned data_type, unsigned rank)
 {
-  return (data_type & 0xfu) | ((rank & 0xfu) << 4);
+  return (data_type & 0x1fu) | ((rank & 0x7u) << 5);
 }
 
 static uint32_t tile_words(PipelineCase c)
@@ -386,20 +387,15 @@ static const char *selected_kernel_name(PathKind kind, PipelineCase c)
 static void build_desc(uint32_t *desc, PipelineCase c)
 {
   memset(desc, 0, DESC_WORDS * sizeof(uint32_t));
-  desc[0] = 0x56544d41u;
-  desc[1] = desc_control(6, 2);  /* FP32, rank=2 */
-  desc[2] = 0;                   /* setup kernel patches runtime base */
-  desc[3] = 128;
+  desc[0] = 0x544d4103u;
+  desc[1] = desc_control(7, 2);  /* FP32, rank=2 */
   desc[4] = c.cols;
   desc[5] = c.rows * c.stages;
-  desc[6] = desc[7] = desc[8] = 1;
-  desc[9] = sizeof(float);
-  desc[10] = c.cols * sizeof(float);
-  desc[11] = desc[12] = desc[13] = 0;
-  desc[14] = c.cols;
-  desc[15] = c.rows;
-  desc[16] = desc[17] = desc[18] = 1;
-  for (uint32_t i = 0; i < 5; i++) desc[19 + i] = 1;
+  desc[9] = c.cols * sizeof(float);
+  desc[17] = c.cols;
+  desc[18] = c.rows;
+  desc[22] = 1;
+  desc[23] = 1;
 }
 
 static float abs_f32(float x)
@@ -554,9 +550,15 @@ static cl_int build_program_with_tile_options(cl_context context,
   free(source);
   if (err != CL_SUCCESS) return err;
 
-  char options[128];
-  snprintf(options, sizeof(options), "-DTILE_ROWS=%uu -DTILE_COLS=%uu",
-           c.rows, c.cols);
+  char source_dir[PATH_MAX];
+  snprintf(source_dir, sizeof(source_dir), "%s", source_path);
+  char *slash = strrchr(source_dir, '/');
+  if (slash) *slash = '\0';
+  else snprintf(source_dir, sizeof(source_dir), ".");
+  char options[PATH_MAX + 160];
+  snprintf(options, sizeof(options),
+           "-I%s/../common -DTILE_ROWS=%uu -DTILE_COLS=%uu",
+           source_dir, c.rows, c.cols);
   err = clBuildProgram(prog, 1, &device, options, NULL, NULL);
   if (err != CL_SUCCESS) {
     ventus_print_build_log(prog, device);
@@ -800,8 +802,19 @@ static int launch_child(const char *prog, PathKind kind, PipelineCase c,
   pid = fork();
   if (pid < 0) return 1;
   if (pid == 0) {
+    char cache_dir[768];
+    char tmp_dir[768];
     FILE *out = fopen(child->log_path, "a");
     setenv("VENTUS_DMA_TMA_TENSOR_S2G_PINGPONG_SOURCE", source_abs, 1);
+    snprintf(cache_dir, sizeof(cache_dir), "%s/%s/pocl-cache", cwd,
+             child->run_dir);
+    snprintf(tmp_dir, sizeof(tmp_dir), "%s/%s/tmp", cwd, child->run_dir);
+    (void)mkdir(cache_dir, 0775);
+    (void)mkdir(tmp_dir, 0775);
+    setenv("POCL_CACHE_DIR", cache_dir, 1);
+    setenv("TMPDIR", tmp_dir, 1);
+    setenv("TMP", tmp_dir, 1);
+    setenv("TEMP", tmp_dir, 1);
     if (out) {
       dup2(fileno(out), STDOUT_FILENO);
       dup2(fileno(out), STDERR_FILENO);

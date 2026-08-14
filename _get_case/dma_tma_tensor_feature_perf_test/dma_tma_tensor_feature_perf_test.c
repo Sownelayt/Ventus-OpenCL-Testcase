@@ -29,6 +29,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,13 +37,14 @@
 #include <sys/wait.h>
 
 #include "../common/ventus_opencl_test.h"
+#include "../common/ventus_tma_v2_spec.h"
 
 #define DESC_WORDS 32u
 #define COORD_WORDS 32u
 #define MAX_RANK 5u
 #define WG_SIZE 32u
 #define FEATURE_GLOBAL_BYTES 65536u
-#define FEATURE_SHARED_ELEMS 256u
+#define FEATURE_SHARED_ELEMS 512u
 #define FEATURE_SHARED_BYTES (FEATURE_SHARED_ELEMS * sizeof(uint32_t))
 #define DEFAULT_ITERATIONS 8u
 #define MAX_ITERATIONS 64u
@@ -62,7 +64,6 @@ typedef struct {
   unsigned global_dim[MAX_RANK];
   unsigned global_strides[MAX_RANK];
   unsigned box_dim[MAX_RANK];
-  unsigned element_strides[MAX_RANK];
   unsigned coord[MAX_RANK];
 } feature_case_t;
 
@@ -74,8 +75,11 @@ typedef struct {
   size_t written_elems;
   size_t dst_span;
   size_t shared_span;
+  size_t unique_global_lines;
   uint64_t ns;
   uint64_t cycles;
+  uint64_t cache_requests;
+  int cache_requests_valid;
 } feature_result_t;
 
 typedef enum {
@@ -255,14 +259,6 @@ static const feature_case_t feature_cases[] = {
     .global_dim = {8, 8, 4, 1, 1},
     .global_strides = {32, 256, 0, 0, 0},
     .box_dim = {8, 8, 4, 1, 1},
-  },
-  {
-    .name = "stride2_rank2_16x16",
-    .rank = 2,
-    .global_dim = {32, 16, 1, 1, 1},
-    .global_strides = {128, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {2, 1, 1, 1, 1},
   },
   {
     .name = "oob_rank2_16x16_at_8_0",
@@ -741,100 +737,6 @@ static const feature_case_t feature_stress_cases[] = {
     .box_dim = {16, 16, 1, 1, 1},
   },
   {
-    .name = "base_element_stride2_dim0_rank2_16x16",
-    .rank = 2,
-    .global_dim = {32, 16, 1, 1, 1},
-    .global_strides = {128, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-  },
-  {
-    .name = "element_stride2_dim0_rank2_16x16",
-    .rank = 2,
-    .global_dim = {32, 16, 1, 1, 1},
-    .global_strides = {128, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {2, 1, 1, 1, 1},
-  },
-  {
-    .name = "base_element_stride4_dim0_rank2_16x16",
-    .rank = 2,
-    .global_dim = {64, 16, 1, 1, 1},
-    .global_strides = {256, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-  },
-  {
-    .name = "element_stride4_dim0_rank2_16x16",
-    .rank = 2,
-    .global_dim = {64, 16, 1, 1, 1},
-    .global_strides = {256, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {4, 1, 1, 1, 1},
-  },
-  {
-    .name = "base_swizzle32_element_stride2_dim0_rank2_16x16",
-    .rank = 2,
-    .global_dim = {32, 16, 1, 1, 1},
-    .global_strides = {128, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {2, 1, 1, 1, 1},
-  },
-  {
-    .name = "swizzle32_element_stride2_dim0_rank2_16x16",
-    .rank = 2,
-    .swizzle_mode = 1,
-    .global_dim = {32, 16, 1, 1, 1},
-    .global_strides = {128, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {2, 1, 1, 1, 1},
-  },
-  {
-    .name = "base_element_stride2_dim1_rank2_16x8",
-    .rank = 2,
-    .global_dim = {16, 32, 1, 1, 1},
-    .global_strides = {64, 0, 0, 0, 0},
-    .box_dim = {16, 8, 1, 1, 1},
-  },
-  {
-    .name = "element_stride2_dim1_rank2_16x8",
-    .rank = 2,
-    .global_dim = {16, 32, 1, 1, 1},
-    .global_strides = {64, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {1, 2, 1, 1, 1},
-  },
-  {
-    .name = "base_element_stride4_dim1_rank2_16x16",
-    .rank = 2,
-    .global_dim = {16, 64, 1, 1, 1},
-    .global_strides = {64, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-  },
-  {
-    .name = "element_stride4_dim1_rank2_16x16",
-    .rank = 2,
-    .global_dim = {16, 64, 1, 1, 1},
-    .global_strides = {64, 0, 0, 0, 0},
-    .box_dim = {16, 64, 1, 1, 1},
-    .element_strides = {1, 4, 1, 1, 1},
-  },
-  {
-    .name = "base_swizzle32_element_stride2_dim1_rank2_16x8",
-    .rank = 2,
-    .global_dim = {16, 32, 1, 1, 1},
-    .global_strides = {64, 0, 0, 0, 0},
-    .box_dim = {16, 8, 1, 1, 1},
-    .element_strides = {1, 2, 1, 1, 1},
-  },
-  {
-    .name = "swizzle32_element_stride2_dim1_rank2_16x8",
-    .rank = 2,
-    .swizzle_mode = 1,
-    .global_dim = {16, 32, 1, 1, 1},
-    .global_strides = {64, 0, 0, 0, 0},
-    .box_dim = {16, 16, 1, 1, 1},
-    .element_strides = {1, 2, 1, 1, 1},
-  },
-  {
     .name = "base_subbox_misaligned_rank2_8x8_at_1_1",
     .rank = 2,
     .global_dim = {16, 16, 1, 1, 1},
@@ -947,10 +849,7 @@ static size_t swizzle_offset(size_t logical_off, size_t row, unsigned mode)
 
 static unsigned out_dim(const feature_case_t *c, unsigned dim)
 {
-  unsigned box = c->box_dim[dim] ? c->box_dim[dim] : 1u;
-  unsigned stride = c->element_strides[dim] ? c->element_strides[dim] : 1u;
-  if (dim == 0 || stride <= 1u) return box;
-  return (box + stride - 1u) / stride;
+  return c->box_dim[dim] ? c->box_dim[dim] : 1u;
 }
 
 static size_t logical_elems(const feature_case_t *c)
@@ -1011,49 +910,64 @@ static size_t tensor_shared_offset(const feature_case_t *c,
                                    const unsigned dims[MAX_RANK])
 {
   const unsigned es = 4;
-  size_t off = 0;
-  size_t mul = es;
-  for (unsigned d = 0; d < c->rank; d++) {
-    off += (size_t)idx[d] * mul;
-    mul *= dims[d];
-  }
-
   size_t row = 0;
   size_t row_mul = 1;
   for (unsigned d = 1; d < c->rank; d++) {
     row += (size_t)idx[d] * row_mul;
     row_mul *= dims[d];
   }
-  return swizzle_offset(off, row, c->swizzle_mode);
+  if (c->swizzle_mode != VENTUS_TMA_SWIZZLE_NONE) {
+    /*
+     * CUDA assigns each logical row a physical pitch equal to the selected
+     * swizzle span. A short row leaves padding atoms in shared memory; it is
+     * not tightly packed before the XOR permutation.
+     */
+    size_t span = (size_t)16u << c->swizzle_mode;
+    size_t off = row * span + (size_t)idx[0] * es;
+    return swizzle_offset(off, row, c->swizzle_mode);
+  }
+
+  size_t off = 0;
+  size_t mul = es;
+  for (unsigned d = 0; d < c->rank; d++) {
+    off += (size_t)idx[d] * mul;
+    mul *= dims[d];
+  }
+  return off;
 }
 
 static void build_desc(uint32_t desc[DESC_WORDS], const feature_case_t *c)
 {
   memset(desc, 0, DESC_WORDS * sizeof(uint32_t));
-  unsigned data_type = c->data_type ? c->data_type : 6u;
-  desc[0] = 0x56544d41u;
-  desc[1] = (data_type & 0xfu) | ((c->rank & 0xfu) << 4) |
-            ((c->interleave_mode & 0x3u) << 8) |
-            ((c->swizzle_mode & 0x3u) << 10);
-  desc[2] = 0;
-  desc[3] = 128;
-  for (unsigned i = 0; i < MAX_RANK; i++) {
-    desc[4 + i] = c->global_dim[i] ? c->global_dim[i] : 1u;
-    desc[9 + i] = i == 0 ? 4u : c->global_strides[i - 1];
-    desc[14 + i] = c->box_dim[i] ? c->box_dim[i] : 1u;
-    desc[19 + i] = c->element_strides[i] ? c->element_strides[i] : 1u;
+  unsigned data_type = c->data_type ? c->data_type : 7u;
+  desc[VENTUS_TMA_V2_WORD_MAGIC] = VENTUS_TMA_V2_MAGIC;
+  desc[VENTUS_TMA_V2_WORD_CONTROL] =
+      (data_type & 0x1fu) | ((c->rank & 0x7u) << 5) |
+      ((c->interleave_mode & 0x3u) << 8) |
+      ((c->swizzle_mode & 0x3u) << 10);
+  for (unsigned i = 0; i < c->rank; i++) {
+    desc[VENTUS_TMA_V2_WORD_GLOBAL_DIMS + i] =
+        c->global_dim[i] ? c->global_dim[i] : 1u;
+    desc[VENTUS_TMA_V2_WORD_BOX_DIMS + i] =
+        c->box_dim[i] ? c->box_dim[i] : 1u;
+    desc[VENTUS_TMA_V2_WORD_ELEMENT_STRIDES + i] = 1u;
+    if (i + 1u < c->rank)
+      desc[VENTUS_TMA_V2_WORD_GLOBAL_STRIDES + i * 2] =
+          c->global_strides[i];
   }
 }
 
 static int fill_tensor_model(uint8_t *global_model, uint8_t *shared_model,
                              const feature_case_t *c, size_t *written_elems,
-                             size_t *dst_span, size_t *shared_span)
+                             size_t *dst_span, size_t *shared_span,
+                             size_t *unique_global_lines)
 {
   unsigned dims[MAX_RANK] = {1, 1, 1, 1, 1};
   size_t total = 1;
   size_t max_global_written = 0;
   size_t max_shared_written = 0;
   size_t writes = 0;
+  uint8_t touched_lines[FEATURE_GLOBAL_BYTES / 128u] = {0};
   memset(global_model, 0xcd, FEATURE_GLOBAL_BYTES);
   memset(shared_model, 0, FEATURE_SHARED_BYTES);
 
@@ -1072,8 +986,7 @@ static int fill_tensor_model(uint8_t *global_model, uint8_t *shared_model,
       rem /= dims[d];
     }
     for (unsigned d = 0; d < c->rank; d++) {
-      unsigned stride = c->element_strides[d] ? c->element_strides[d] : 1u;
-      gcoord[d] = c->coord[d] + idx[d] * stride;
+      gcoord[d] = c->coord[d] + idx[d];
       if (gcoord[d] >= c->global_dim[d]) oob = 1;
     }
     if (oob) continue;
@@ -1094,6 +1007,7 @@ static int fill_tensor_model(uint8_t *global_model, uint8_t *shared_model,
     memcpy(global_model + dst_off, &word, sizeof(word));
     memcpy(shared_model + shared_off, &word, sizeof(word));
     writes++;
+    touched_lines[dst_off / 128u] = 1u;
     if (dst_off + sizeof(word) > max_global_written) {
       max_global_written = dst_off + sizeof(word);
     }
@@ -1104,6 +1018,10 @@ static int fill_tensor_model(uint8_t *global_model, uint8_t *shared_model,
   *written_elems = writes;
   *dst_span = max_global_written;
   *shared_span = max_shared_written;
+  *unique_global_lines = 0;
+  for (size_t line = 0; line < sizeof(touched_lines); ++line) {
+    *unique_global_lines += touched_lines[line] != 0;
+  }
   return 0;
 }
 
@@ -1166,8 +1084,15 @@ static cl_int build_program_with_iterations(cl_context context,
   free(source);
   if (err != CL_SUCCESS) return err;
 
-  char options[64];
-  snprintf(options, sizeof(options), "-DFEATURE_ITERATIONS=%uu", iterations);
+  char source_dir[PATH_MAX];
+  snprintf(source_dir, sizeof(source_dir), "%s", source_path);
+  char *slash = strrchr(source_dir, '/');
+  if (slash) *slash = '\0';
+  else snprintf(source_dir, sizeof(source_dir), ".");
+  char options[PATH_MAX + 128];
+  snprintf(options, sizeof(options),
+           "-I%s/../common -DFEATURE_ITERATIONS=%uu",
+           source_dir, iterations);
   err = clBuildProgram(prog, 1, &device, options, NULL, NULL);
   if (err != CL_SUCCESS) {
     ventus_print_build_log(prog, device);
@@ -1199,6 +1124,57 @@ static int run_list_has_name(const feature_case_t *const *cases, size_t count,
   return 0;
 }
 
+static int v2_case_legal(const feature_case_t *c, char *reason,
+                         size_t reason_size)
+{
+  unsigned dtype = c->data_type ? c->data_type : VENTUS_TMA_DTYPE_FP32;
+  if (c->rank < 1u || c->rank > VENTUS_TMA_V2_RANK_MAX) {
+    snprintf(reason, reason_size, "rank-out-of-range");
+    return 0;
+  }
+  if (!((dtype <= VENTUS_TMA_DTYPE_BF16) ||
+        dtype == VENTUS_TMA_DTYPE_B4X16)) {
+    snprintf(reason, reason_size, "dtype-unsupported");
+    return 0;
+  }
+  if (c->interleave_mode > VENTUS_TMA_INTERLEAVE_32B ||
+      c->swizzle_mode > VENTUS_TMA_SWIZZLE_128B) {
+    snprintf(reason, reason_size, "layout-code-unsupported");
+    return 0;
+  }
+  if (c->interleave_mode != VENTUS_TMA_INTERLEAVE_NONE && c->rank < 3u) {
+    snprintf(reason, reason_size, "interleave-requires-rank3");
+    return 0;
+  }
+  if (c->interleave_mode == VENTUS_TMA_INTERLEAVE_32B &&
+      c->swizzle_mode != VENTUS_TMA_SWIZZLE_32B) {
+    snprintf(reason, reason_size, "interleave32-requires-swizzle32");
+    return 0;
+  }
+  for (unsigned d = 0; d < c->rank; d++) {
+    if (d > 0u) {
+      unsigned align = c->interleave_mode == VENTUS_TMA_INTERLEAVE_32B ? 32u : 16u;
+      unsigned global_stride = c->global_strides[d - 1u];
+      if (global_stride == 0u || (global_stride & (align - 1u)) != 0u) {
+        snprintf(reason, reason_size, "global-stride-dim%u", d);
+        return 0;
+      }
+    }
+  }
+  size_t bytes = row_bytes(c);
+  if (bytes == 0u || (bytes & (VENTUS_TMA_V2_ATOM_BYTES - 1u)) != 0u) {
+    snprintf(reason, reason_size, "row-bytes-not-16B");
+    return 0;
+  }
+  if (c->swizzle_mode != VENTUS_TMA_SWIZZLE_NONE &&
+      bytes > ((size_t)16u << c->swizzle_mode)) {
+    snprintf(reason, reason_size, "row-exceeds-swizzle-span");
+    return 0;
+  }
+  reason[0] = '\0';
+  return 1;
+}
+
 static int build_run_list(run_mode_t mode, const feature_case_t *single_feature,
                           const feature_case_t ***out_cases,
                           size_t *out_count)
@@ -1215,15 +1191,35 @@ static int build_run_list(run_mode_t mode, const feature_case_t *single_feature,
 
   size_t count = 0;
   if (mode == RUN_SINGLE || mode == RUN_SINGLE_DIR) {
+    char reason[96];
+    if (!v2_case_legal(single_feature, reason, sizeof(reason))) {
+      fprintf(stderr, "FEATURE_SKIP name=%s reason=%s\n",
+              single_feature->name, reason);
+      free(cases);
+      return 1;
+    }
     cases[count++] = single_feature;
   } else {
     for (size_t i = 0; i < sweep_count; i++) {
-      cases[count++] = &feature_cases[i];
+      char reason[96];
+      if (v2_case_legal(&feature_cases[i], reason, sizeof(reason))) {
+        cases[count++] = &feature_cases[i];
+      } else {
+        printf("FEATURE_SKIP name=%s reason=%s\n", feature_cases[i].name,
+               reason);
+      }
     }
     if (mode == RUN_STRESS) {
       for (size_t i = 0; i < stress_count; i++) {
-        if (!run_list_has_name(cases, count, feature_stress_cases[i].name)) {
+        char reason[96];
+        if (run_list_has_name(cases, count, feature_stress_cases[i].name)) {
+          continue;
+        }
+        if (v2_case_legal(&feature_stress_cases[i], reason, sizeof(reason))) {
           cases[count++] = &feature_stress_cases[i];
+        } else {
+          printf("FEATURE_SKIP name=%s reason=%s\n",
+                 feature_stress_cases[i].name, reason);
         }
       }
     }
@@ -1242,7 +1238,7 @@ static int starts_with(const char *text, const char *prefix)
 static void print_host_pair_summary(const feature_result_t *results, size_t count)
 {
   printf("FEATURE_PAIR_SUMMARY\n");
-  printf("| direction | feature | base | row bytes | swizzle span | est row segments | feature cycles/iter | base cycles/iter | cycle feature/base | feature ns/iter | base ns/iter | host feature/base |\n");
+  printf("| direction | feature | base | row bytes | feature/base unique lines | feature/base cycles/iter | raw cycle ratio | feature/base cycles/line | normalized cycle ratio | feature/base cache req/line | feature/base logical B/cycle | host ratio |\n");
   printf("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
   for (size_t i = 0; i < count; i++) {
     const char *name = results[i].feature->name;
@@ -1266,17 +1262,42 @@ static void print_host_pair_summary(const feature_result_t *results, size_t coun
     double feature_cycle_iter = (double)results[i].cycles / (double)results[i].iterations;
     double base_cycle_iter = (double)base->cycles / (double)base->iterations;
     double cycle_ratio = base_cycle_iter > 0.0 ? feature_cycle_iter / base_cycle_iter : 0.0;
+    double feature_cycles_line = results[i].unique_global_lines ?
+      feature_cycle_iter / (double)results[i].unique_global_lines : 0.0;
+    double base_cycles_line = base->unique_global_lines ?
+      base_cycle_iter / (double)base->unique_global_lines : 0.0;
+    double normalized_cycle_ratio = base_cycles_line > 0.0 ?
+      feature_cycles_line / base_cycles_line : 0.0;
+    double feature_req_line = results[i].cache_requests_valid &&
+        results[i].unique_global_lines ?
+      ((double)results[i].cache_requests / results[i].iterations) /
+        results[i].unique_global_lines : 0.0;
+    double base_req_line = base->cache_requests_valid && base->unique_global_lines ?
+      ((double)base->cache_requests / base->iterations) /
+        base->unique_global_lines : 0.0;
+    double feature_logical_bw = feature_cycle_iter > 0.0 ?
+      ((double)results[i].logical_elems * sizeof(uint32_t)) /
+        feature_cycle_iter : 0.0;
+    double base_logical_bw = base_cycle_iter > 0.0 ?
+      ((double)base->logical_elems * sizeof(uint32_t)) / base_cycle_iter : 0.0;
     size_t row = row_bytes(results[i].feature);
     size_t span = swizzle_span_bytes(results[i].feature);
     size_t segments = estimated_row_segments(results[i].feature);
-    printf("FEATURE_PAIR direction=%s feature=%s base=%s cycle_ratio=%.3fx feature_cycles_iter=%.2f base_cycles_iter=%.2f host_ratio=%.3fx feature_ns_iter=%.2f base_ns_iter=%.2f row_bytes=%zu swizzle_span=%zu est_row_segments=%zu\n",
+    printf("FEATURE_PAIR direction=%s feature=%s base=%s cycle_ratio=%.3fx normalized_cycle_ratio=%.3fx feature_cycles_iter=%.2f base_cycles_iter=%.2f feature_cycles_per_line=%.4f base_cycles_per_line=%.4f feature_unique_lines=%zu base_unique_lines=%zu feature_cache_req_per_line=%.4f base_cache_req_per_line=%.4f feature_logical_bytes_per_cycle=%.6f base_logical_bytes_per_cycle=%.6f host_ratio=%.3fx feature_ns_iter=%.2f base_ns_iter=%.2f row_bytes=%zu swizzle_span=%zu est_row_segments=%zu\n",
            direction_name(results[i].direction), name, base_name, cycle_ratio,
-           feature_cycle_iter, base_cycle_iter, host_ratio, feature_ns_iter,
-           base_ns_iter, row, span, segments);
-    printf("| %s | %s | %s | %zu | %zu | %zu | %.2f | %.2f | %.3fx | %.2f | %.2f | %.3fx |\n",
-           direction_name(results[i].direction), name, base_name, row, span,
-           segments, feature_cycle_iter, base_cycle_iter, cycle_ratio,
-           feature_ns_iter, base_ns_iter, host_ratio);
+           normalized_cycle_ratio, feature_cycle_iter, base_cycle_iter,
+           feature_cycles_line, base_cycles_line,
+           results[i].unique_global_lines, base->unique_global_lines,
+           feature_req_line, base_req_line, feature_logical_bw,
+           base_logical_bw, host_ratio, feature_ns_iter, base_ns_iter,
+           row, span, segments);
+    printf("| %s | %s | %s | %zu | %zu/%zu | %.2f/%.2f | %.3fx | %.4f/%.4f | %.3fx | %.4f/%.4f | %.6f/%.6f | %.3fx |\n",
+           direction_name(results[i].direction), name, base_name, row,
+           results[i].unique_global_lines, base->unique_global_lines,
+           feature_cycle_iter, base_cycle_iter, cycle_ratio,
+           feature_cycles_line, base_cycles_line, normalized_cycle_ratio,
+           feature_req_line, base_req_line, feature_logical_bw,
+           base_logical_bw, host_ratio);
   }
 }
 
@@ -1313,14 +1334,26 @@ static void print_result_row(const feature_result_t *result)
   double ns_per_elem = result->logical_elems ?
     (double)result->ns /
     ((double)result->iterations * (double)result->logical_elems) : 0.0;
-  printf("| %s | %s | %u | %u | %u | %zu | %zu | %zu | %zu | %zu | %zu | %zu | %.2f | %.2f | %.2f |\n",
+  double cycles_per_iter = (double)result->cycles / (double)result->iterations;
+  double logical_bytes_per_cycle = cycles_per_iter > 0.0 ?
+    ((double)result->logical_elems * sizeof(uint32_t)) / cycles_per_iter : 0.0;
+  double cycles_per_unique_line = result->unique_global_lines ?
+    cycles_per_iter / (double)result->unique_global_lines : 0.0;
+  double cache_requests_per_iter = result->cache_requests_valid ?
+    (double)result->cache_requests / (double)result->iterations : 0.0;
+  double requests_per_unique_line = result->cache_requests_valid &&
+      result->unique_global_lines ?
+    cache_requests_per_iter / (double)result->unique_global_lines : 0.0;
+  printf("| %s | %s | %u | %u | %u | %zu | %zu | %zu | %zu | %zu | %zu | %zu | %zu | %.2f | %.4f | %.6f | %.2f | %.4f | %.2f | %.2f |\n",
          direction_name(result->direction), result->feature->name,
          result->feature->rank, result->feature->interleave_mode,
          result->feature->swizzle_mode, row_bytes(result->feature),
          swizzle_span_bytes(result->feature),
          estimated_row_segments(result->feature), result->logical_elems,
          result->written_elems, result->dst_span, result->shared_span,
-         (double)result->cycles / (double)result->iterations,
+         result->unique_global_lines, cycles_per_iter, cycles_per_unique_line,
+         logical_bytes_per_cycle, cache_requests_per_iter,
+         requests_per_unique_line,
          (double)result->ns / (double)result->iterations, ns_per_elem);
 }
 
@@ -1340,6 +1373,8 @@ static int parse_child_result_line(const char *line,
       parse_size_field(line, "written_elems=", &result->written_elems) != 0 ||
       parse_size_field(line, "dst_span=", &result->dst_span) != 0 ||
       parse_size_field(line, "shared_span=", &result->shared_span) != 0 ||
+      parse_size_field(line, "unique_global_lines=",
+                       &result->unique_global_lines) != 0 ||
       parse_u64_field(line, "cycles=", &result->cycles) != 0 ||
       parse_u64_field(line, " ns=", &result->ns) != 0) {
     return 1;
@@ -1368,8 +1403,22 @@ static int run_child_feature(const char *self, const feature_case_t *feature,
 
   char line[4096];
   int saw_result = 0;
+  int saw_g2s_cache_requests = 0;
+  int saw_s2g_cache_requests = 0;
+  uint64_t g2s_cache_requests = 0;
+  uint64_t s2g_cache_requests = 0;
   while (fgets(line, sizeof(line), pipe)) {
     fputs(line, stdout);
+    if (strstr(line,
+        "[TESTCASE TOTAL] [TMA PERF] G2S cache responses") &&
+        parse_u64_field(line, ":", &g2s_cache_requests) == 0) {
+      saw_g2s_cache_requests = 1;
+    }
+    if (strstr(line,
+        "[TESTCASE TOTAL] [TMA PERF] S2G cache responses") &&
+        parse_u64_field(line, ":", &s2g_cache_requests) == 0) {
+      saw_s2g_cache_requests = 1;
+    }
     if (parse_child_result_line(line, feature, direction, result) == 0) {
       saw_result = 1;
     }
@@ -1390,6 +1439,13 @@ static int run_child_feature(const char *self, const feature_case_t *feature,
             direction_name(direction), feature->name, status);
     return 1;
   }
+  if (direction == FEATURE_DIR_G2S && saw_g2s_cache_requests) {
+    result->cache_requests = g2s_cache_requests;
+    result->cache_requests_valid = 1;
+  } else if (direction == FEATURE_DIR_S2G && saw_s2g_cache_requests) {
+    result->cache_requests = s2g_cache_requests;
+    result->cache_requests_valid = 1;
+  }
   return 0;
 }
 
@@ -1408,8 +1464,8 @@ static int run_list_child_processes(const char *self,
   printf("FEATURE_SWEEP iterations=%u global_bytes=%u shared_bytes=%zu wg_size=%u cases=%zu directions=%u process_per_case=1\n",
          iterations, FEATURE_GLOBAL_BYTES, (size_t)FEATURE_SHARED_BYTES,
          WG_SIZE, run_count, FEATURE_DIR_COUNT);
-  printf("| direction | feature | rank | interleave | swizzle | row bytes | swizzle span | est row segments | logical_elems | written_elems | dst_span | shared_span | cycles/iter | ns/iter | ns/elem |\n");
-  printf("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+  printf("| direction | feature | rank | interleave | swizzle | row bytes | swizzle span | est row segments | logical elems | written elems | physical span | shared span | unique 128B lines | cycles/iter | cycles/line | logical B/cycle | cache req/iter | cache req/line | ns/iter | ns/elem |\n");
+  printf("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 
   int exit_code = 0;
   for (size_t i = 0; i < run_count && exit_code == 0; i++) {
@@ -1443,9 +1499,10 @@ static int run_feature(cl_context context, cl_command_queue queue,
   cl_mem coords_buf = NULL;
   cl_mem global_buf = NULL;
   cl_mem readback_buf = NULL;
+  cl_mem metrics_buf = NULL;
   cl_event event = NULL;
   uint32_t desc[DESC_WORDS];
-  uint32_t desc_out[DESC_WORDS];
+  uint32_t metrics[2] = {0, 0};
   uint32_t coords[COORD_WORDS] = {0};
   uint8_t *global_model = NULL;
   uint8_t *global_got = NULL;
@@ -1456,9 +1513,11 @@ static int run_feature(cl_context context, cl_command_queue queue,
   size_t written = 0;
   size_t span = 0;
   size_t shared_span = 0;
+  size_t unique_global_lines = 0;
   int exit_code = 1;
   size_t global = WG_SIZE, local = WG_SIZE;
   unsigned direction_arg = (unsigned)direction;
+  uint32_t transaction_bytes = (uint32_t)(logical_elems(feature) * sizeof(uint32_t));
   unsigned effective_iterations =
     direction == FEATURE_DIR_G2S ? 1u : iterations;
 
@@ -1475,7 +1534,7 @@ static int run_feature(cl_context context, cl_command_queue queue,
   build_desc(desc, feature);
   for (unsigned i = 0; i < MAX_RANK; i++) coords[i] = feature->coord[i];
   if (fill_tensor_model(global_model, shared_model, feature, &written, &span,
-                        &shared_span) != 0) {
+                        &shared_span, &unique_global_lines) != 0) {
     goto FINISH;
   }
   memset(global_got, 0xcd, FEATURE_GLOBAL_BYTES);
@@ -1493,6 +1552,9 @@ static int run_feature(cl_context context, cl_command_queue queue,
   readback_buf = clCreateBuffer(context, CL_MEM_READ_WRITE, FEATURE_SHARED_BYTES,
                                 NULL, &err);
   CHECK_OPENCL_ERROR_IN("clCreateBuffer(readback)");
+  metrics_buf = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                               sizeof(metrics), metrics, &err);
+  CHECK_OPENCL_ERROR_IN("clCreateBuffer(metrics)");
   if (direction == FEATURE_DIR_G2S) {
     err = clEnqueueWriteBuffer(queue, global_buf, CL_TRUE, 0,
                                FEATURE_GLOBAL_BYTES, global_model, 0, NULL,
@@ -1515,7 +1577,9 @@ static int run_feature(cl_context context, cl_command_queue queue,
   err |= clSetKernelArg(kernel, 1, sizeof(coords_buf), &coords_buf);
   err |= clSetKernelArg(kernel, 2, sizeof(global_buf), &global_buf);
   err |= clSetKernelArg(kernel, 3, sizeof(readback_buf), &readback_buf);
-  err |= clSetKernelArg(kernel, 4, sizeof(direction_arg), &direction_arg);
+  err |= clSetKernelArg(kernel, 4, sizeof(metrics_buf), &metrics_buf);
+  err |= clSetKernelArg(kernel, 5, sizeof(direction_arg), &direction_arg);
+  err |= clSetKernelArg(kernel, 6, sizeof(transaction_bytes), &transaction_bytes);
   CHECK_OPENCL_ERROR_IN("clSetKernelArg");
 
   err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global, &local,
@@ -1527,9 +1591,14 @@ static int run_feature(cl_context context, cl_command_queue queue,
     fprintf(stderr, "FAIL %s event profiling\n", feature->name);
     goto FINISH;
   }
-  err = clEnqueueReadBuffer(queue, desc_buf, CL_TRUE, 0,
-                            sizeof(desc_out), desc_out, 0, NULL, NULL);
-  CHECK_OPENCL_ERROR_IN("clEnqueueReadBuffer(desc)");
+  err = clEnqueueReadBuffer(queue, metrics_buf, CL_TRUE, 0,
+                            sizeof(metrics), metrics, 0, NULL, NULL);
+  CHECK_OPENCL_ERROR_IN("clEnqueueReadBuffer(metrics)");
+  if (metrics[0] != VENTUS_TMA_STATUS_OK) {
+    fprintf(stderr, "FAIL %s %s TMA status=%u\n",
+            direction_name(direction), feature->name, metrics[0]);
+    goto FINISH;
+  }
   if (direction == FEATURE_DIR_G2S) {
     err = clEnqueueReadBuffer(queue, readback_buf, CL_TRUE, 0,
                               FEATURE_SHARED_BYTES, shared_got, 0, NULL,
@@ -1565,8 +1634,9 @@ static int run_feature(cl_context context, cl_command_queue queue,
   result->written_elems = written;
   result->dst_span = span;
   result->shared_span = shared_span;
+  result->unique_global_lines = unique_global_lines;
   result->ns = ns;
-  result->cycles = desc_out[31];
+  result->cycles = metrics[1];
   if (result->cycles == 0) {
     fprintf(stderr, "FAIL %s %s movement cycle counter returned zero\n",
             direction_name(direction), feature->name);
@@ -1574,19 +1644,27 @@ static int run_feature(cl_context context, cl_command_queue queue,
   }
   double ns_per_elem = result->logical_elems ?
     (double)ns / ((double)result->iterations * (double)result->logical_elems) : 0.0;
-  printf("FEATURE_RESULT direction=%s name=%s rank=%u interleave=%u swizzle=%u row_bytes=%zu swizzle_span=%zu est_row_segments=%zu logical_elems=%zu written_elems=%zu dst_span=%zu shared_span=%zu iterations=%u cycles=%" PRIu64 " cycles_per_iter=%.2f ns=%" PRIu64 " ns_per_iter=%.2f ns_per_elem=%.2f\n",
+  double cycles_per_iter = (double)result->cycles / (double)result->iterations;
+  double logical_bytes_per_cycle = cycles_per_iter > 0.0 ?
+    ((double)result->logical_elems * sizeof(uint32_t)) / cycles_per_iter : 0.0;
+  double cycles_per_unique_line = unique_global_lines ?
+    cycles_per_iter / (double)unique_global_lines : 0.0;
+  printf("FEATURE_RESULT direction=%s name=%s rank=%u interleave=%u swizzle=%u row_bytes=%zu swizzle_span=%zu est_row_segments=%zu logical_elems=%zu logical_bytes=%zu written_elems=%zu dst_span=%zu physical_span=%zu shared_span=%zu unique_global_lines=%zu iterations=%u cycles=%" PRIu64 " cycles_per_iter=%.2f cycles_per_unique_line=%.4f logical_bytes_per_cycle=%.6f ns=%" PRIu64 " ns_per_iter=%.2f ns_per_elem=%.2f\n",
          direction_name(direction), feature->name, feature->rank,
          feature->interleave_mode, feature->swizzle_mode, row_bytes(feature),
          swizzle_span_bytes(feature),
          estimated_row_segments(feature), result->logical_elems,
-         result->written_elems, result->dst_span, result->shared_span,
+         result->logical_elems * sizeof(uint32_t), result->written_elems,
+         result->dst_span, result->dst_span, result->shared_span,
+         result->unique_global_lines,
          result->iterations, result->cycles,
-         (double)result->cycles / (double)result->iterations,
+         cycles_per_iter, cycles_per_unique_line, logical_bytes_per_cycle,
          ns, (double)ns / (double)result->iterations, ns_per_elem);
   exit_code = 0;
 
 FINISH:
   if (event) clReleaseEvent(event);
+  if (metrics_buf) clReleaseMemObject(metrics_buf);
   if (readback_buf) clReleaseMemObject(readback_buf);
   if (global_buf) clReleaseMemObject(global_buf);
   if (coords_buf) clReleaseMemObject(coords_buf);
@@ -1733,8 +1811,8 @@ int main(int argc, char **argv)
     printf("FEATURE_SWEEP iterations=%u global_bytes=%u shared_bytes=%zu wg_size=%u cases=%zu directions=%u\n",
            iterations, FEATURE_GLOBAL_BYTES, (size_t)FEATURE_SHARED_BYTES,
            WG_SIZE, run_count, FEATURE_DIR_COUNT);
-    printf("| direction | feature | rank | interleave | swizzle | row bytes | swizzle span | est row segments | logical_elems | written_elems | dst_span | shared_span | cycles/iter | ns/iter | ns/elem |\n");
-    printf("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    printf("| direction | feature | rank | interleave | swizzle | row bytes | swizzle span | est row segments | logical elems | written elems | physical span | shared span | unique 128B lines | cycles/iter | cycles/line | logical B/cycle | cache req/iter | cache req/line | ns/iter | ns/elem |\n");
+    printf("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
   }
 
   result_count = run_count * FEATURE_DIR_COUNT;

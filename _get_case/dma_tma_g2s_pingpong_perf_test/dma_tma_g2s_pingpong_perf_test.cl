@@ -10,8 +10,12 @@
  * the next tile before consuming it in the following iteration.
  */
 
+#include "ventus_tma_v2_opencl.h"
+
 #define DESC_WORDS 32u
-#define COORD_WORDS 32u
+#define COORD_VECTOR_WORDS 32u
+#define COORD_PHASE_WORD 36u
+#define COORD_WORDS 40u
 #ifndef TILE_ROWS
 #define TILE_ROWS 16u
 #endif
@@ -60,7 +64,7 @@ compute_tile(__local uint *src, __local uint *dst, uint lid)
 static void
 set_stage_coords(__local uint *coords, uint stage, uint lid)
 {
-  for (uint i = lid; i < COORD_WORDS; i += WG_SIZE) {
+  for (uint i = lid; i < COORD_VECTOR_WORDS; i += WG_SIZE) {
     coords[i] = 0u;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -71,23 +75,24 @@ set_stage_coords(__local uint *coords, uint stage, uint lid)
   barrier(CLK_LOCAL_MEM_FENCE);
 }
 
-#define ISSUE_TMA_G2S_BUF(BUF, DESC, COORDS) do {                         \
-  uint tma_smem = (uint)(BUF);                                             \
-  uint tma_desc = (uint)(DESC);                                             \
-  uint tma_coords = (uint)(COORDS);                                         \
-  __asm__ volatile(                                                         \
-    "vid.v v12\n\t"                                                       \
-    "vsll.vi v12, v12, 2\n\t"                                             \
-    "vadd.vx v12, v12, %[coords]\n\t"                                     \
-    "vlw12.v v12, 0(v12)\n\t"                                             \
-    "mv x10, %[smem]\n\t"                                                 \
-    "mv x11, %[desc]\n\t"                                                 \
-    ".word 0x00C5A542\n\t"                                                \
-    :                                                                       \
-    : [smem] "r"(tma_smem), [desc] "r"(tma_desc),                         \
-      [coords] "r"(tma_coords)                                             \
-    : "x10", "x11", "memory"                                             \
-  );                                                                        \
+static __local uint *
+align_local_8(__local uint *base)
+{
+  return (__local uint *)(((uint)base + 7u) & ~7u);
+}
+
+#define ISSUE_TMA_G2S_BUF(BUF, DESC, COORDS) do {                           \
+  VENTUS_TMA_LOAD_COORDS_V12((COORDS));                                      \
+  if (lid == 0u) {                                                           \
+    __local uint *issue_mbarrier =                                           \
+      align_local_8((COORDS) + COORD_VECTOR_WORDS);                          \
+    if ((COORDS)[1] == 0u) {                                                 \
+      VENTUS_TMA_MBARRIER_INIT(issue_mbarrier, 1u);                          \
+    }                                                                        \
+    (COORDS)[COORD_PHASE_WORD] = ((COORDS)[1] / TILE_ROWS) & 1u;             \
+    VENTUS_TMA_MBARRIER_ARRIVE_EXPECT_TX(issue_mbarrier, TILE_WORDS * 4u);   \
+    VENTUS_TMA_TENSOR_G2S((BUF), (DESC));                                    \
+  }                                                                          \
 } while (0)
 
 static void
@@ -100,9 +105,14 @@ store_tile_global(__local uint *src, volatile __global uint *output,
   }
 }
 
-#define TMA_WAIT_ALL() do {                                                  \
-  __asm__ volatile(".word 0x00006042\n\t" ::: "memory");                  \
-  barrier(CLK_LOCAL_MEM_FENCE);                                              \
+#define TMA_WAIT_ALL() do {                                                   \
+  if (lid == 0u) {                                                            \
+    __local uint *wait_mbarrier =                                             \
+      align_local_8(coords + COORD_VECTOR_WORDS);                             \
+    VENTUS_TMA_MBARRIER_WAIT(wait_mbarrier, coords[COORD_PHASE_WORD]);        \
+    VENTUS_TMA_FENCE_PROXY_ASYNC_SHARED();                                    \
+  }                                                                           \
+  barrier(CLK_LOCAL_MEM_FENCE);                                               \
 } while (0)
 
 kernel void
@@ -297,7 +307,11 @@ tma_pingpong_b2_s1_kernel(__global uint *g2s_desc,
   __local uint in1[TILE_WORDS];
   __local uint out0[TILE_WORDS];
   __local uint coords[COORD_WORDS];
+  __local uint tma_barrier_raw[2];
+  __local uint *tma_mbarrier = align_local_8(tma_barrier_raw);
   uint lid = get_local_id(0);
+  uint tma_phase = 0u;
+  uint tma_initialized = 0u;
 
   if (lid == 0u) {
     g2s_desc[2] = (uint)input;
@@ -322,7 +336,11 @@ tma_pingpong_b2_s2_kernel(__global uint *g2s_desc,
   __local uint in1[TILE_WORDS];
   __local uint out0[TILE_WORDS];
   __local uint coords[COORD_WORDS];
+  __local uint tma_barrier_raw[2];
+  __local uint *tma_mbarrier = align_local_8(tma_barrier_raw);
   uint lid = get_local_id(0);
+  uint tma_phase = 0u;
+  uint tma_initialized = 0u;
 
   if (lid == 0u) {
     g2s_desc[2] = (uint)input;
@@ -355,7 +373,11 @@ tma_pingpong_b2_s3_kernel(__global uint *g2s_desc,
   __local uint in1[TILE_WORDS];
   __local uint out0[TILE_WORDS];
   __local uint coords[COORD_WORDS];
+  __local uint tma_barrier_raw[2];
+  __local uint *tma_mbarrier = align_local_8(tma_barrier_raw);
   uint lid = get_local_id(0);
+  uint tma_phase = 0u;
+  uint tma_initialized = 0u;
 
   if (lid == 0u) {
     g2s_desc[2] = (uint)input;
@@ -396,7 +418,11 @@ tma_pingpong_b2_s4_kernel(__global uint *g2s_desc,
   __local uint in1[TILE_WORDS];
   __local uint out0[TILE_WORDS];
   __local uint coords[COORD_WORDS];
+  __local uint tma_barrier_raw[2];
+  __local uint *tma_mbarrier = align_local_8(tma_barrier_raw);
   uint lid = get_local_id(0);
+  uint tma_phase = 0u;
+  uint tma_initialized = 0u;
 
   if (lid == 0u) {
     g2s_desc[2] = (uint)input;
@@ -445,7 +471,11 @@ tma_pingpong_b2_s8_kernel(__global uint *g2s_desc,
   __local uint in1[TILE_WORDS];
   __local uint out0[TILE_WORDS];
   __local uint coords[COORD_WORDS];
+  __local uint tma_barrier_raw[2];
+  __local uint *tma_mbarrier = align_local_8(tma_barrier_raw);
   uint lid = get_local_id(0);
+  uint tma_phase = 0u;
+  uint tma_initialized = 0u;
 
   if (lid == 0u) {
     g2s_desc[2] = (uint)input;
@@ -543,7 +573,11 @@ tma_pingpong_b2_s16_kernel(__global uint *g2s_desc,
   __local uint in1[TILE_WORDS];
   __local uint out0[TILE_WORDS];
   __local uint coords[COORD_WORDS];
+  __local uint tma_barrier_raw[2];
+  __local uint *tma_mbarrier = align_local_8(tma_barrier_raw);
   uint lid = get_local_id(0);
+  uint tma_phase = 0u;
+  uint tma_initialized = 0u;
 
   if (lid == 0u) {
     g2s_desc[2] = (uint)input;
@@ -571,4 +605,3 @@ tma_pingpong_b2_s16_kernel(__global uint *g2s_desc,
   RUN_TMA_PRELOAD_STORE(15u, in1, in0, 14u);
   RUN_TMA_STORE_FINAL(in1, 15u);
 }
-
